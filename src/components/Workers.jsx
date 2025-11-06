@@ -39,7 +39,10 @@ const Workers = () => {
   const api = import.meta.env.VITE_API_URL;
 
   const fetchWorkers = async () => {
-    const res = await axios.get(`${api}/workers`);
+    const token = localStorage.getItem('token');
+    const res = await axios.get(`${api}/workers`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
     setWorkers(res.data);
     setFiltered(res.data);
   };
@@ -48,7 +51,10 @@ const Workers = () => {
     const periods = ["day", "week", "month", "year", "all"];
     const results = {};
     for (const p of periods) {
-      const res = await axios.get(`${api}/workers/sales?period=${p}`);
+      const token = localStorage.getItem('token');
+      const res = await axios.get(`${api}/workers/sales?period=${p}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
       results[p] = res.data;
     }
     setSalesReport(results);
@@ -61,7 +67,10 @@ const Workers = () => {
 
   const addWorker = async () => {
     try {
-      await axios.post(`${api}/workers`, formData);
+      const token = localStorage.getItem('token');
+      await axios.post(`${api}/workers`, formData, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
       setPopup("Worker added successfully");
       setFormData({
         name: "",
@@ -81,7 +90,10 @@ const Workers = () => {
   };
 
   const deleteWorker = async (id) => {
-    await axios.delete(`${api}/workers/${id}`);
+    const token = localStorage.getItem('token');
+    await axios.delete(`${api}/workers/${id}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
     setPopup("🗑️ Worker removed");
     fetchWorkers();
   };
@@ -393,9 +405,12 @@ const Workers = () => {
               </button>
               <button
                 onClick={async () => {
+                  const token = localStorage.getItem('token');
                   await axios.put(
                     `${api}/workers/${editWorker.id}`,
-                    editWorker
+                    editWorker, {
+                      headers: { Authorization: `Bearer ${token}` }
+                    }
                   );
                   setPopup("Worker updated successfully");
                   setEditWorker(null);

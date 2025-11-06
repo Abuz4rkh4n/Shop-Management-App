@@ -55,7 +55,10 @@ const Dashboard = () => {
     try {
       setKpiLoading(true);
       const q = buildQuery();
-      const res = await axios.get(`${api}/dashboard/summary${q}`);
+      const token = localStorage.getItem('token');
+      const res = await axios.get(`${api}/dashboard/summary${q}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
       setSummary(res.data);
     } catch (err) {
       console.error("Summary error", err);
@@ -67,7 +70,10 @@ const Dashboard = () => {
   async function fetchLeaderboard() {
     try {
       const q = buildQuery() + "&limit=6";
-      const res = await axios.get(`${api}/dashboard/leaderboard${q}`);
+      const token = localStorage.getItem('token');
+      const res = await axios.get(`${api}/dashboard/leaderboard${q}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
       setLeaderboard(res.data || []);
     } catch (err) {
       console.error("Leaderboard error", err);
@@ -77,7 +83,10 @@ const Dashboard = () => {
   async function fetchTopProducts() {
     try {
       const q = buildQuery() + "&limit=8";
-      const res = await axios.get(`${api}/dashboard/top-products${q}`);
+      const token = localStorage.getItem('token');
+      const res = await axios.get(`${api}/dashboard/top-products${q}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
       setTopProducts(res.data || []);
     } catch (err) {
       console.error("Top products error", err);
@@ -86,7 +95,10 @@ const Dashboard = () => {
 
   async function fetchRecentSales() {
     try {
-      const res = await axios.get(`${api}/dashboard/recent-sales?limit=8`);
+      const token = localStorage.getItem('token');
+      const res = await axios.get(`${api}/dashboard/recent-sales?limit=8`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
       setRecentSales(res.data || []);
     } catch (err) {
       console.error("Recent sales error", err);

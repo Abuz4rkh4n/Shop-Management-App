@@ -2,12 +2,19 @@ import express from "express";
 import mysql from "mysql2";
 import cors from "cors";
 import dotenv from "dotenv";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import { v4 as uuidv4 } from "uuid";
+import { authenticateToken } from "./middleware/auth.js";
+import { sendVerificationEmail, sendAdminInviteEmail } from "./utils/email.js";
 
 dotenv.config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// ========== AUTHENTICATION ROUTES (public) ==========
 
 const db = mysql.createConnection({
   host: process.env.DB_HOST,
@@ -24,6 +31,352 @@ db.connect((err) => {
   console.log("Connected to MySQL");
 });
 
+// Helper function to generate verification code
+const generateVerificationCode = () => {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+};
+
+// Safely parse permissions from DB (JSON string or object)
+function toPerms(val) {
+  try {
+    if (!val) return {};
+    if (typeof val === 'object') return val;
+    if (typeof val === 'string') return JSON.parse(val);
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+// Helper function to check if admin exists
+const checkAdminExists = () => {
+  return new Promise((resolve, reject) => {
+    db.query("SELECT COUNT(*) as count FROM admin_users", (err, result) => {
+      if (err) return reject(err);
+      resolve(result[0].count > 0);
+    });
+  });
+};
+
+// Send admin invitation code (protected: only logged-in admin can invite)
+app.post("/auth/send-invite", authenticateToken, async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+
+    // Check if admin already exists
+    const admin = await new Promise((resolve, reject) => {
+      db.query("SELECT * FROM admin_users WHERE email = ?", [email], (err, result) => {
+        if (err) return reject(err);
+        resolve(result[0]);
+      });
+    });
+
+    if (admin) {
+      return res
+        .status(400)
+        .json({ message: "Admin with this email already exists" });
+    }
+
+    // Generate invitation code
+    const code = generateVerificationCode();
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+    // Store in email_verifications table
+    await new Promise((resolve, reject) => {
+      db.query(
+        "INSERT INTO email_verifications (email, code, expires_at) VALUES (?, ?, ?)",
+        [email, code, expiresAt],
+        (err, result) => {
+          if (err) return reject(err);
+          resolve(result);
+        }
+      );
+    });
+
+    // Send email
+    const emailSent = await sendAdminInviteEmail(email, code);
+
+    if (emailSent) {
+      res.json({ message: "Invitation code sent to email" });
+    } else {
+      res.status(500).json({ message: "Failed to send email" });
+    }
+  } catch (error) {
+    console.error("Send invite error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// Admin signup
+app.post("/auth/signup", async (req, res) => {
+  try {
+    const { name, email, password, invitationCode } = req.body;
+
+    if (!name || !email || !password || !invitationCode) {
+      return res.status(400).json({ message: "All fields are required" });
+    }
+
+    // Check if admin already exists
+    const admin = await new Promise((resolve, reject) => {
+      db.query(
+        "SELECT * FROM admin_users WHERE email = ?",
+        [email],
+        (err, result) => {
+          if (err) return reject(err);
+          resolve(result[0]);
+        }
+      );
+    });
+
+    if (admin) {
+      return res
+        .status(400)
+        .json({ message: "Admin with this email already exists" });
+    }
+
+    // Verify invitation code
+    const verificationResult = await new Promise((resolve, reject) => {
+      db.query(
+        "SELECT * FROM email_verifications WHERE email = ? AND code = ? AND expires_at > NOW()",
+        [email, invitationCode],
+        (err, result) => {
+          if (err) return reject(err);
+          resolve(result);
+        }
+      );
+    });
+
+    if (verificationResult.length === 0) {
+      return res
+        .status(400)
+        .json({ message: "Invalid or expired invitation code" });
+    }
+
+    // Hash password
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+    // Create admin user
+    const result = await new Promise((resolve, reject) => {
+      db.query(
+        "INSERT INTO admin_users (name, email, password, is_verified) VALUES (?, ?, ?, TRUE)",
+        [name, email, hashedPassword],
+        (err, result) => {
+          if (err) return reject(err);
+          resolve(result);
+        }
+      );
+    });
+
+    // Clean up verification code
+    await new Promise((resolve, reject) => {
+      db.query(
+        "DELETE FROM email_verifications WHERE email = ?",
+        [email],
+        (err, result) => {
+          if (err) return reject(err);
+          resolve(result);
+        }
+      );
+    });
+
+    res.json({
+      message: "Admin created successfully",
+      adminId: result.insertId,
+    });
+  } catch (error) {
+    console.error("Signup error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// Admin login
+app.post("/auth/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res
+        .status(400)
+        .json({ message: "Email and password are required" });
+    }
+
+    // Find admin
+    const admin = await new Promise((resolve, reject) => {
+      db.query(
+        "SELECT id, name, email, password, is_verified, role, address, permissions FROM admin_users WHERE email = ?",
+        [email],
+        (err, result) => {
+          if (err) return reject(err);
+          resolve(result[0]);
+        }
+      );
+    });
+
+    if (!admin) {
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
+
+    if (!admin.is_verified) {
+      return res.status(401).json({ message: "Account not verified" });
+    }
+
+    // Verify password
+    const isValidPassword = await bcrypt.compare(password, admin.password);
+
+    if (!isValidPassword) {
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
+
+    // Generate JWT token
+    const token = jwt.sign(
+      {
+        id: admin.id,
+        email: admin.email,
+        name: admin.name,
+        role: admin.role,
+        address: admin.address,
+        permissions: toPerms(admin.permissions),
+      },
+      process.env.JWT_SECRET || "fallback_secret",
+      { expiresIn: "24h" }
+    );
+
+    res.json({
+      message: "Login successful",
+      token,
+      admin: {
+        id: admin.id,
+        name: admin.name,
+        email: admin.email,
+        role: admin.role,
+        address: admin.address,
+        permissions: toPerms(admin.permissions),
+      },
+    });
+  } catch (error) {
+    console.error("Login error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// Verify token
+app.get("/auth/verify", authenticateToken, async (req, res) => {
+  try {
+    const admin = await new Promise((resolve, reject) => {
+      db.query("SELECT id, name, email, role, address, permissions FROM admin_users WHERE id = ?", [req.user.id], (err, result) => {
+        if (err) return reject(err);
+        resolve(result[0]);
+      });
+    });
+    // normalize permissions
+    const perms = toPerms(admin?.permissions);
+    res.json({ valid: true, admin: { ...admin, permissions: perms } });
+  } catch (error) {
+    res.status(401).json({ valid: false });
+  }
+});
+
+// Admin management (superadmin only)
+app.get("/admins", authenticateToken, async (req, res) => {
+  try {
+    const me = await new Promise((resolve, reject) => {
+      db.query("SELECT role FROM admin_users WHERE id = ?", [req.user.id], (err, result) => {
+        if (err) return reject(err);
+        resolve(result[0]);
+      });
+    });
+    if (!me || me.role !== 'superadmin') return res.status(403).json({ message: 'Forbidden' });
+
+    const rows = await new Promise((resolve, reject) => {
+      db.query("SELECT id, name, email, role, address, permissions, created_at FROM admin_users ORDER BY id DESC", (err, result) => {
+        if (err) return reject(err);
+        resolve(result);
+      });
+    });
+    const data = rows.map(r => ({ ...r, permissions: toPerms(r.permissions) }));
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+app.post("/admins", authenticateToken, async (req, res) => {
+  try {
+    const me = await new Promise((resolve, reject) => {
+      db.query("SELECT role FROM admin_users WHERE id = ?", [req.user.id], (err, result) => {
+        if (err) return reject(err);
+        resolve(result[0]);
+      });
+    });
+    if (!me || me.role !== 'superadmin') return res.status(403).json({ message: 'Forbidden' });
+
+    const { name, email, password, address = null, permissions = {}, role = 'admin' } = req.body;
+    if (!name || !email || !password) return res.status(400).json({ message: 'Missing fields' });
+    const hashed = await bcrypt.hash(password, 10);
+    const permsStr = JSON.stringify(permissions || {});
+    await new Promise((resolve, reject) => {
+      db.query("INSERT INTO admin_users (name, email, password, role, address, permissions, is_verified) VALUES (?, ?, ?, ?, ?, ?, TRUE)",
+        [name, email, hashed, role, address, permsStr], (err) => {
+          if (err) return reject(err);
+          resolve();
+        });
+    });
+    res.json({ message: 'Admin created' });
+  } catch (e) {
+    if (e && e.code === 'ER_DUP_ENTRY') {
+      return res.status(400).json({ message: 'Admin with this email already exists' });
+    }
+    console.error('Create admin error', e);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+app.put("/admins/:id", authenticateToken, async (req, res) => {
+  try {
+    const me = await new Promise((resolve, reject) => {
+      db.query("SELECT role FROM admin_users WHERE id = ?", [req.user.id], (err, result) => {
+        if (err) return reject(err);
+        resolve(result[0]);
+      });
+    });
+    if (!me || me.role !== 'superadmin') return res.status(403).json({ message: 'Forbidden' });
+
+    const { id } = req.params;
+    const { name, address, password, permissions, role } = req.body;
+    const fields = [];
+    const values = [];
+    if (name !== undefined) { fields.push('name = ?'); values.push(name); }
+    if (address !== undefined) { fields.push('address = ?'); values.push(address); }
+    if (role !== undefined) { fields.push('role = ?'); values.push(role); }
+    if (permissions !== undefined) { fields.push('permissions = ?'); values.push(JSON.stringify(permissions || {})); }
+    if (password) {
+      const hashed = await bcrypt.hash(password, 10);
+      fields.push('password = ?');
+      values.push(hashed);
+    }
+    if (!fields.length) return res.json({ message: 'No changes' });
+    const sql = `UPDATE admin_users SET ${fields.join(', ')} WHERE id = ?`;
+    values.push(id);
+    await new Promise((resolve, reject) => {
+      db.query(sql, values, (err) => err ? reject(err) : resolve());
+    });
+    res.json({ message: 'Admin updated' });
+  } catch (e) {
+    console.error('Update admin error', e);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// ========== PROTECTED ROUTES (require authentication) ==========
+
+// Apply authentication middleware to all routes below
+app.use(authenticateToken);
+
 /* ------------------------
    PRODUCTS
    ------------------------ */
@@ -37,6 +390,191 @@ app.get("/products", (req, res) => {
       return res.status(500).json({ message: "DB error" });
     }
     res.json(rows);
+  });
+});
+
+// Delete a sales receipt and its items
+app.delete("/sales/receipts/:id", (req, res) => {
+  const { id } = req.params;
+  db.beginTransaction((err) => {
+    if (err) {
+      console.error("Transaction start error:", err);
+      return res.status(500).json({ message: "DB error" });
+    }
+    db.query("DELETE FROM sales_receipt_items WHERE receipt_id = ?", [id], (err) => {
+      if (err) {
+        return db.rollback(() => {
+          console.error("Error deleting receipt items:", err);
+          res.status(500).json({ message: "DB error" });
+        });
+      }
+      db.query("DELETE FROM sales_receipts WHERE id = ?", [id], (err, result) => {
+        if (err) {
+          return db.rollback(() => {
+            console.error("Error deleting receipt:", err);
+            res.status(500).json({ message: "DB error" });
+          });
+        }
+        if (result.affectedRows === 0) {
+          return db.rollback(() => res.status(404).json({ message: "Receipt not found" }));
+        }
+        db.commit((err) => {
+          if (err) {
+            return db.rollback(() => {
+              console.error("Commit error:", err);
+              res.status(500).json({ message: "DB error" });
+            });
+          }
+          res.json({ message: "Receipt deleted" });
+        });
+      });
+    });
+  });
+});
+
+// Update a sales receipt payment status
+app.put("/sales/receipts/:id/status", (req, res) => {
+  const { id } = req.params;
+  const { payment_status } = req.body;
+  const allowed = ["paid", "pending", "all product got removed"]; // allowed statuses
+  if (!allowed.includes(payment_status)) {
+    return res.status(400).json({ message: "Invalid payment status" });
+  }
+  db.query(
+    "UPDATE sales_receipts SET payment_status = ? WHERE id = ?",
+    [payment_status, id],
+    (err, result) => {
+      if (err) {
+        console.error("Error updating sales receipt status:", err);
+        return res.status(500).json({ message: "DB error" });
+      }
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ message: "Receipt not found" });
+      }
+      res.json({ message: "Receipt status updated" });
+    }
+  );
+});
+
+// Return items from a sales receipt
+// Body: { item_id, quantity, reason }
+app.post("/sales/receipts/:id/return", (req, res) => {
+  const { id } = req.params;
+  const { item_id, quantity, reason } = req.body;
+  const qty = parseInt(quantity || 0, 10);
+  if (!item_id || !qty || qty <= 0) {
+    return res.status(400).json({ message: "Invalid return data" });
+  }
+
+  db.beginTransaction(async (err) => {
+    if (err) {
+      console.error("Transaction start error:", err);
+      return res.status(500).json({ message: "DB error" });
+    }
+    try {
+      // Load item
+      const items = await new Promise((resolve, reject) => {
+        db.query(
+          "SELECT * FROM sales_receipt_items WHERE id = ? AND receipt_id = ? FOR UPDATE",
+          [item_id, id],
+          (err, rows) => (err ? reject(err) : resolve(rows))
+        );
+      });
+      if (!items || items.length === 0) {
+        throw { status: 404, message: "Receipt item not found" };
+      }
+      const it = items[0];
+      if (qty > it.quantity) {
+        throw { status: 400, message: "Return quantity exceeds item quantity" };
+      }
+
+      // Update or delete the item row
+      if (qty === it.quantity) {
+        await new Promise((resolve, reject) => {
+          db.query(
+            "DELETE FROM sales_receipt_items WHERE id = ?",
+            [item_id],
+            (err) => (err ? reject(err) : resolve())
+          );
+        });
+      } else {
+        await new Promise((resolve, reject) => {
+          db.query(
+            "UPDATE sales_receipt_items SET quantity = quantity - ? WHERE id = ?",
+            [qty, item_id],
+            (err) => (err ? reject(err) : resolve())
+          );
+        });
+      }
+
+      // Restore product stock
+      await new Promise((resolve, reject) => {
+        db.query(
+          "UPDATE products SET quantity = quantity + ? WHERE id = ?",
+          [qty, it.product_id],
+          (err) => (err ? reject(err) : resolve())
+        );
+      });
+
+      // Recalculate receipt total and items count
+      const rows = await new Promise((resolve, reject) => {
+        db.query(
+          `SELECT IFNULL(SUM(quantity * sold_price), 0) AS total, COUNT(*) AS cnt FROM sales_receipt_items WHERE receipt_id = ?`,
+          [id],
+          (err, rows) => (err ? reject(err) : resolve(rows))
+        );
+      });
+      const total = Number(rows[0]?.total || 0);
+      const cnt = Number(rows[0]?.cnt || 0);
+
+      // Update receipt total
+      await new Promise((resolve, reject) => {
+        db.query(
+          "UPDATE sales_receipts SET total_amount = ? WHERE id = ?",
+          [total, id],
+          (err) => (err ? reject(err) : resolve())
+        );
+      });
+
+      // If no items remain, mark status accordingly
+      if (cnt === 0) {
+        await new Promise((resolve, reject) => {
+          db.query(
+            "UPDATE sales_receipts SET payment_status = 'all product got removed' WHERE id = ?",
+            [id],
+            (err) => (err ? reject(err) : resolve())
+          );
+        });
+      }
+
+      db.commit((err) => {
+        if (err) {
+          return db.rollback(() => res.status(500).json({ message: "Commit failed" }));
+        }
+        res.json({ message: "Return processed", receipt_updated_total: total, items_remaining: cnt });
+      });
+    } catch (e) {
+      db.rollback(() => {
+        console.error("Receipt return error:", e);
+        if (e && e.status) return res.status(e.status).json({ message: e.message });
+        return res.status(500).json({ message: "Error processing return" });
+      });
+    }
+  });
+});
+
+// Get product by ID (useful for barcode scanners that emit product ID)
+app.get("/products/:id", (req, res) => {
+  const { id } = req.params;
+  db.query("SELECT * FROM products WHERE id = ?", [id], (err, rows) => {
+    if (err) {
+      console.error("Error fetching product by id:", err);
+      return res.status(500).json({ message: "DB error" });
+    }
+    if (!rows || rows.length === 0) {
+      return res.status(404).json({ message: "Product not found" });
+    }
+    res.json(rows[0]);
   });
 });
 
@@ -567,9 +1105,23 @@ app.get("/workers/sales", (req, res) => {
 
 // Record sales (with stock decrement in one transaction)
 app.post("/sales", (req, res) => {
-  const { items } = req.body;
+  const {
+    items,
+    paymentStatus = "paid",
+    customerName = "",
+    customerPhone = "",
+  } = req.body;
   if (!items || !Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ message: "No sale items provided" });
+  }
+
+  // Only allow 'paid' or 'pending'
+  const allowedStatuses = ["paid", "pending"];
+  const normalizedStatus = allowedStatuses.includes(paymentStatus) ? paymentStatus : "paid";
+
+  // Customer name is compulsory
+  if (!customerName || String(customerName).trim() === "") {
+    return res.status(400).json({ message: "Customer name is required" });
   }
 
   db.beginTransaction(async (err) => {
@@ -609,8 +1161,17 @@ app.post("/sales", (req, res) => {
         // 2) Insert sale
         await new Promise((resolve, reject) => {
           db.query(
-            "INSERT INTO sales (product_id, worker_id, quantity, sold_price, total_amount) VALUES (?, ?, ?, ?, ?)",
-            [product_id, worker_id, qty, sold_price, qty * sold_price],
+            "INSERT INTO sales (product_id, worker_id, quantity, sold_price, total_amount, payment_status, customer_name, customer_phone) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+              product_id,
+              worker_id,
+              qty,
+              sold_price,
+              qty * sold_price,
+              normalizedStatus,
+              customerName,
+              customerPhone,
+            ],
             (err) => (err ? reject(err) : resolve())
           );
         });
@@ -657,7 +1218,7 @@ app.get("/sales", (req, res) => {
 
   const sql = `
     SELECT s.id, s.product_id, p.name AS product_name, s.worker_id, w.name AS worker_name,
-           s.quantity, s.sold_price, s.total_amount, s.created_at
+           s.quantity, s.sold_price, s.total_amount, s.payment_status, s.customer_name, s.customer_phone, s.created_at
     FROM sales s
     LEFT JOIN products p ON p.id = s.product_id
     LEFT JOIN workers w ON w.id = s.worker_id
@@ -671,6 +1232,326 @@ app.get("/sales", (req, res) => {
       return res.status(500).json({ message: "DB error" });
     }
     res.json(rows);
+  });
+});
+
+// ---------------------- SALES RECEIPTS API ----------------------
+// Expected schema (run in DB separately):
+// CREATE TABLE IF NOT EXISTS sales_receipts (
+//   id INT AUTO_INCREMENT PRIMARY KEY,
+//   worker_id INT NOT NULL,
+//   payment_status ENUM('paid','pending','hold') DEFAULT 'paid',
+//   customer_name VARCHAR(255) NULL,
+//   customer_phone VARCHAR(20) NULL,
+//   total_amount DECIMAL(15,2) DEFAULT 0,
+//   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+//   FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE RESTRICT ON UPDATE CASCADE
+// );
+// CREATE TABLE IF NOT EXISTS sales_receipt_items (
+//   id INT AUTO_INCREMENT PRIMARY KEY,
+//   receipt_id INT NOT NULL,
+//   product_id INT NOT NULL,
+//   quantity INT NOT NULL,
+//   sold_price DECIMAL(13,2) NOT NULL,
+//   line_total DECIMAL(15,2) AS (quantity * sold_price) STORED,
+//   FOREIGN KEY (receipt_id) REFERENCES sales_receipts(id) ON DELETE CASCADE,
+//   FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE RESTRICT
+// );
+
+// Create a sales receipt with multiple items and decrement stock, also mirror rows in `sales` table
+app.post("/sales/receipts", (req, res) => {
+  const {
+    worker_id,
+    items,
+    paymentStatus = "paid",
+    customerName = "",
+    customerPhone = "",
+  } = req.body;
+
+  if (!worker_id) return res.status(400).json({ message: "Worker is required" });
+  if (!items || !Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ message: "No receipt items provided" });
+  }
+
+  const allowedStatuses = ["paid", "pending", "hold"]; // align with DB enum
+  const normalizedStatus = allowedStatuses.includes(paymentStatus) ? paymentStatus : "paid";
+
+  db.beginTransaction(async (err) => {
+    if (err) {
+      console.error("Transaction begin error:", err);
+      return res.status(500).json({ message: "DB transaction error" });
+    }
+
+    try {
+      // Insert receipt header
+      const receiptId = await new Promise((resolve, reject) => {
+        db.query(
+          "INSERT INTO sales_receipts (worker_id, payment_status, customer_name, customer_phone, total_amount) VALUES (?, ?, ?, ?, 0)",
+          [worker_id, normalizedStatus, customerName || null, customerPhone || null],
+          (err, result) => (err ? reject(err) : resolve(result.insertId))
+        );
+      });
+
+      let totalAmount = 0;
+
+      for (const it of items) {
+        const { product_id, quantity, sold_price } = it;
+        const qty = parseInt(quantity || 0, 10);
+        const price = parseFloat(sold_price || 0);
+        if (!product_id || qty <= 0 || !price) {
+          throw { status: 400, message: "Invalid item data" };
+        }
+
+        // Lock and check stock
+        const rows = await new Promise((resolve, reject) => {
+          db.query(
+            "SELECT id, quantity FROM products WHERE id = ? FOR UPDATE",
+            [product_id],
+            (err, result) => (err ? reject(err) : resolve(result))
+          );
+        });
+        if (!rows || rows.length === 0) {
+          throw { status: 404, message: `Product ${product_id} not found` };
+        }
+        const product = rows[0];
+        if (product.quantity < qty) {
+          throw { status: 400, message: `Insufficient stock for product id ${product_id}` };
+        }
+
+        // Insert receipt item
+        await new Promise((resolve, reject) => {
+          db.query(
+            "INSERT INTO sales_receipt_items (receipt_id, product_id, quantity, sold_price) VALUES (?, ?, ?, ?)",
+            [receiptId, product_id, qty, price],
+            (err) => (err ? reject(err) : resolve())
+          );
+        });
+
+        // Mirror into sales table for reporting
+        await new Promise((resolve, reject) => {
+          db.query(
+            "INSERT INTO sales (product_id, worker_id, quantity, sold_price, total_amount, payment_status, customer_name, customer_phone) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [product_id, worker_id, qty, price, qty * price, normalizedStatus, customerName || null, customerPhone || null],
+            (err) => (err ? reject(err) : resolve())
+          );
+        });
+
+        // Decrement stock
+        await new Promise((resolve, reject) => {
+          db.query(
+            "UPDATE products SET quantity = quantity - ? WHERE id = ?",
+            [qty, product_id],
+            (err) => (err ? reject(err) : resolve())
+          );
+        });
+
+        totalAmount += qty * price;
+      }
+
+      // Update header total
+      await new Promise((resolve, reject) => {
+        db.query(
+          "UPDATE sales_receipts SET total_amount = ? WHERE id = ?",
+          [totalAmount, receiptId],
+          (err) => (err ? reject(err) : resolve())
+        );
+      });
+
+      db.commit((err) => {
+        if (err) {
+          db.rollback(() => {
+            console.error("Commit error:", err);
+            return res.status(500).json({ message: "Commit failed" });
+          });
+        } else {
+          res.json({ message: "Receipt created", receiptId, total_amount: totalAmount });
+        }
+      });
+    } catch (error) {
+      db.rollback(() => {
+        console.error("Sales receipt transaction error:", error);
+        if (error && error.status) {
+          return res.status(error.status).json({ message: error.message });
+        }
+        return res.status(500).json({ message: "Error creating sales receipt" });
+      });
+    }
+  });
+});
+
+// List sales receipts
+app.get("/sales/receipts", (req, res) => {
+  const sql = `
+    SELECT sr.id, sr.worker_id, w.name AS worker_name,
+           sr.payment_status, sr.customer_name, sr.customer_phone,
+           sr.total_amount, sr.created_at,
+           COUNT(sri.id) AS items_count
+    FROM sales_receipts sr
+    LEFT JOIN workers w ON w.id = sr.worker_id
+    LEFT JOIN sales_receipt_items sri ON sri.receipt_id = sr.id
+    GROUP BY sr.id
+    ORDER BY sr.created_at DESC
+  `;
+  db.query(sql, (err, rows) => {
+    if (err) {
+      console.error("Error fetching sales receipts:", err);
+      return res.status(500).json({ message: "DB error" });
+    }
+    res.json(rows);
+  });
+});
+
+// Get a single sales receipt with items
+app.get("/sales/receipts/:id", (req, res) => {
+  const { id } = req.params;
+  const sqlHeader = `
+    SELECT sr.id, sr.worker_id, w.name AS worker_name,
+           sr.payment_status, sr.customer_name, sr.customer_phone,
+           sr.total_amount, sr.created_at
+    FROM sales_receipts sr
+    LEFT JOIN workers w ON w.id = sr.worker_id
+    WHERE sr.id = ?
+  `;
+  const sqlItems = `
+    SELECT sri.*, p.name AS product_name
+    FROM sales_receipt_items sri
+    LEFT JOIN products p ON p.id = sri.product_id
+    WHERE sri.receipt_id = ?
+    ORDER BY sri.id
+  `;
+  db.query(sqlHeader, [id], (err, rows) => {
+    if (err) return res.status(500).json({ message: "DB error" });
+    if (!rows || rows.length === 0) return res.status(404).json({ message: "Not found" });
+    const header = rows[0];
+    db.query(sqlItems, [id], (err2, items) => {
+      if (err2) return res.status(500).json({ message: "DB error" });
+      res.json({ ...header, items });
+    });
+  });
+});
+
+// ========== RETURNS API ==========
+
+// Get all returns
+app.get("/returns", (req, res) => {
+  const sql = `
+    SELECT r.id, r.sale_id, r.product_id, p.name AS product_name, r.worker_id, w.name AS worker_name,
+           r.quantity, r.reason, r.returned_amount, r.created_at
+    FROM returns r
+    LEFT JOIN products p ON p.id = r.product_id
+    LEFT JOIN workers w ON w.id = r.worker_id
+    ORDER BY r.created_at DESC
+  `;
+
+  db.query(sql, (err, rows) => {
+    if (err) {
+      console.error("Error fetching returns:", err);
+      return res.status(500).json({ message: "DB error" });
+    }
+    res.json(rows);
+  });
+});
+
+// Process item return
+app.post("/returns", async (req, res) => {
+  const { saleId, productId, workerId, quantity, reason } = req.body;
+
+  if (!saleId || !productId || !workerId || !quantity || quantity <= 0) {
+    return res.status(400).json({ message: "Invalid return data" });
+  }
+
+  db.beginTransaction(async (err) => {
+    if (err) {
+      console.error("Transaction begin error:", err);
+      return res.status(500).json({ message: "DB transaction error" });
+    }
+
+    try {
+      // 1) Get sale details to calculate return amount
+      const sale = await new Promise((resolve, reject) => {
+        db.query("SELECT * FROM sales WHERE id = ?", [saleId], (err, result) =>
+          err ? reject(err) : resolve(result)
+        );
+      });
+
+      if (!sale || sale.length === 0) {
+        throw { status: 404, message: "Sale not found" };
+      }
+
+      const saleData = sale[0];
+      const returnAmount = saleData.sold_price * quantity;
+
+      // 2) Insert return record
+      await new Promise((resolve, reject) => {
+        db.query(
+          "INSERT INTO returns (sale_id, product_id, worker_id, quantity, reason, returned_amount) VALUES (?, ?, ?, ?, ?, ?)",
+          [saleId, productId, workerId, quantity, reason || "", returnAmount],
+          (err, result) => (err ? reject(err) : resolve(result))
+        );
+      });
+
+      // 3) Update product stock (add back the returned items)
+      await new Promise((resolve, reject) => {
+        db.query(
+          "UPDATE products SET quantity = quantity + ? WHERE id = ?",
+          [quantity, productId],
+          (err) => (err ? reject(err) : resolve())
+        );
+      });
+
+      // 4) Update sale payment status to 'returned' if fully returned
+      const remainingQuantity = saleData.quantity - quantity;
+      if (remainingQuantity <= 0) {
+        await new Promise((resolve, reject) => {
+          db.query(
+            "UPDATE sales SET payment_status = 'returned' WHERE id = ?",
+            [saleId],
+            (err) => (err ? reject(err) : resolve())
+          );
+        });
+      }
+
+      db.commit((err) => {
+        if (err) {
+          db.rollback(() => {
+            console.error("Commit error:", err);
+            return res.status(500).json({ message: "Commit failed" });
+          });
+        } else {
+          res.json({ message: "Return processed successfully" });
+        }
+      });
+    } catch (error) {
+      db.rollback(() => {
+        console.error("Return transaction error:", error);
+        if (error && error.status) {
+          return res.status(error.status).json({ message: error.message });
+        }
+        return res.status(500).json({ message: "Error processing return" });
+      });
+    }
+  });
+});
+
+// Update payment status for a sale
+app.put("/sales/:id/payment", (req, res) => {
+  const { id } = req.params;
+  const { paymentStatus } = req.body;
+
+  if (!["paid", "pending"].includes(paymentStatus)) {
+    return res.status(400).json({ message: "Invalid payment status" });
+  }
+
+  const sql = "UPDATE sales SET payment_status = ? WHERE id = ?";
+  db.query(sql, [paymentStatus, id], (err, result) => {
+    if (err) {
+      console.error("Error updating payment status:", err);
+      return res.status(500).json({ message: "DB error" });
+    }
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "Sale not found" });
+    }
+    res.json({ message: "Payment status updated successfully" });
   });
 });
 
