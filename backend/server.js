@@ -7,12 +7,20 @@ import jwt from "jsonwebtoken";
 import { v4 as uuidv4 } from "uuid";
 import { authenticateToken } from "./middleware/auth.js";
 import { sendVerificationEmail, sendAdminInviteEmail } from "./utils/email.js";
+import backupRoutes from "./routes/backupRoutes.js";
+import { initBackupSystem } from "./utils/backupService.js";
 
 dotenv.config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Initialize backup system
+initBackupSystem();
+
+// ========== BACKUP ROUTES ==========
+app.use('/api', backupRoutes);
 
 // ========== AUTHENTICATION ROUTES (public) ==========
 
@@ -1724,5 +1732,11 @@ app.get("/dashboard/recent-sales", (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+const PORT = process.env.PORT || 8800;
+app.listen(PORT, () => {
+  console.log(`Backup system endpoints:`);
+  console.log(`- GET    /api/backup-info  - Get last backup info`);
+  console.log(`- POST   /api/backup       - Create a new backup (admin)`);
+  console.log(`- POST   /api/restore      - Restore from backup (superadmin)`);
+  console.log(`Server running on port ${PORT}`);
+});

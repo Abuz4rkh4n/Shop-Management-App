@@ -322,7 +322,7 @@ const Dashboard = () => {
         </div>
 
         {/* Product performance + recent sales */}
-        <div className="grid md:grid-cols-2 gap-6">
+        <div className="grid md:grid-cols-2 gap-6 pb-6">
           <div className="bg-white rounded-2xl shadow p-6 border">
             <h3 className="text-xl font-semibold mb-4 text-primary">
               Product Performance

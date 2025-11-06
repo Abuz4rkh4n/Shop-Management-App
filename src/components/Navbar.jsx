@@ -10,6 +10,7 @@ import {
   RotateCcw,
   LogOut,
   User,
+  HardDrive,
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 
@@ -26,6 +27,7 @@ const Navbar = () => {
     { key: 'sales', name: "Sales", path: "/sales", icon: <ShoppingCart size={22} />, show: isSuper || !!permissions.sales },
     { key: 'returns', name: "Returns", path: "/returns", icon: <RotateCcw size={22} />, show: isSuper || !!permissions.returns },
     { key: 'admins', name: "Admins", path: "/admins", icon: <Users size={22} />, show: isSuper },
+    { key: 'backup', name: "Backup & Restore", path: "/backup", icon: <HardDrive size={22} />, show: isSuper || user?.role === 'admin' },
   ].filter(m => m.show);
 
   return (

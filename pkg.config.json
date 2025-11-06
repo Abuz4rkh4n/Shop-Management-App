@@ -1,0 +1,22 @@
+{
+  "name": "shop-management-app",
+  "version": "1.0.0",
+  "description": "Shop Management Application",
+  "main": "start-app.js",
+  "scripts": {
+    "start": "node start-app.js"
+  },
+  "pkg": {
+    "targets": ["node18-win-x64"],
+    "outputPath": "dist",
+    "assets": [
+      "dist/**/*",
+      "backend/**/*",
+      "public/**/*",
+      "src/**/*",
+      "vite.config.js",
+      "package.json",
+      ".env"
+    ]
+  }
+}
