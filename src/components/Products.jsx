@@ -38,8 +38,10 @@ const Products = () => {
     items: [],
   });
 
-  // product add modal (manual)
+  // product modals
   const [showProductModal, setShowProductModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editingProduct, setEditingProduct] = useState(null);
   const [productForm, setProductForm] = useState({
     name: "",
     description: "",
@@ -124,6 +126,45 @@ const Products = () => {
   }
 
   // ---------------- Products ----------------
+  function openEditProductModal(product) {
+    setEditingProduct(product);
+    setProductForm({
+      name: product.name,
+      description: product.description || "",
+      retail_price: product.retail_price,
+      sell_price: product.sell_price,
+      quantity: product.quantity,
+    });
+    setShowEditModal(true);
+  }
+
+  async function updateProduct(e) {
+    e.preventDefault();
+    if (!editingProduct) return;
+    
+    try {
+      const token = localStorage.getItem('token');
+      await axios.put(`${api}/products/${editingProduct.id}`, productForm, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setShowEditModal(false);
+      setEditingProduct(null);
+      setProductForm({
+        name: "",
+        description: "",
+        retail_price: "",
+        sell_price: "",
+        quantity: 0,
+      });
+      loadProducts();
+      alert('Product updated successfully');
+    } catch (err) {
+      console.error(err);
+      alert(err.response?.data?.message || "Error updating product");
+    }
+  }
+
+
   async function addProductManual(e) {
     e.preventDefault();
     try {
@@ -690,6 +731,12 @@ Date: ${new Date(receipt.created_at).toLocaleString()}
                           >
                             Restock
                           </button>
+                          <button
+                            onClick={() => openEditProductModal(p)}
+                            className="px-3 py-1 bg-yellow-600 text-white rounded hover:opacity-90"
+                          >
+                            Edit
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -789,6 +836,125 @@ Date: ${new Date(receipt.created_at).toLocaleString()}
           </div>
         )}
       </div>
+
+      {/* Edit Product Modal */}
+      {showEditModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50">
+          <form
+            onSubmit={updateProduct}
+            className="bg-white p-6 rounded-xl shadow w-full max-w-md relative"
+          >
+            <button
+              type="button"
+              onClick={() => {
+                setShowEditModal(false);
+                setEditingProduct(null);
+              }}
+              className="absolute top-4 right-4 text-gray-500 hover:text-gray-700"
+            >
+              ✕
+            </button>
+            <h3 className="text-xl font-bold mb-4">Edit Product</h3>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">
+                  Product Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  className="w-full p-2 border rounded-lg"
+                  value={productForm.name}
+                  onChange={(e) =>
+                    setProductForm({ ...productForm, name: e.target.value })
+                  }
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">
+                  Description
+                </label>
+                <textarea
+                  className="w-full p-2 border rounded-lg"
+                  rows="2"
+                  value={productForm.description}
+                  onChange={(e) =>
+                    setProductForm({ ...productForm, description: e.target.value })
+                  }
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-1">
+                    Retail Price (Rs.) *
+                  </label>
+                  <input
+                    type="number"
+                    required
+                    min="0"
+                    step="0.01"
+                    className="w-full p-2 border rounded-lg"
+                    value={productForm.retail_price}
+                    onChange={(e) =>
+                      setProductForm({ ...productForm, retail_price: e.target.value })
+                    }
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">
+                    Selling Price (Rs.) *
+                  </label>
+                  <input
+                    type="number"
+                    required
+                    min="0"
+                    step="0.01"
+                    className="w-full p-2 border rounded-lg"
+                    value={productForm.sell_price}
+                    onChange={(e) =>
+                      setProductForm({ ...productForm, sell_price: e.target.value })
+                    }
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">
+                  Quantity *
+                </label>
+                <input
+                  type="number"
+                  required
+                  min="0"
+                  step="1"
+                  className="w-full p-2 border rounded-lg"
+                  value={productForm.quantity}
+                  onChange={(e) =>
+                    setProductForm({ ...productForm, quantity: e.target.value })
+                  }
+                />
+              </div>
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowEditModal(false);
+                    setEditingProduct(null);
+                  }}
+                  className="px-4 py-2 border rounded-lg hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-primary text-white rounded-lg hover:opacity-90"
+                >
+                  Update Product
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      )}
 
       {/* Vendor Modal */}
       {showVendorModal && (

@@ -615,6 +615,66 @@ app.post("/products", (req, res) => {
 });
 
 // Restock product
+// Update a product
+app.put("/products/:id", authenticateToken, (req, res) => {
+  const { id } = req.params;
+  const { name, description, retail_price, sell_price, quantity } = req.body;
+
+  if (!name || !retail_price || !sell_price || quantity === undefined) {
+    return res.status(400).json({ message: "Name, prices, and quantity are required" });
+  }
+
+  const sql = "UPDATE products SET name = ?, description = ?, retail_price = ?, sell_price = ?, quantity = ? WHERE id = ?";
+  db.query(
+    sql,
+    [name, description, retail_price, sell_price, quantity, id],
+    (err, result) => {
+      if (err) {
+        console.error("Update product error:", err);
+        return res.status(500).json({ message: "Error updating product" });
+      }
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ message: "Product not found" });
+      }
+      res.json({ message: "Product updated successfully" });
+    }
+  );
+});
+
+// Delete a product
+app.delete("/products/:id", authenticateToken, (req, res) => {
+  const { id } = req.params;
+  
+  // First, check if there are any sales records for this product
+  const checkSalesSql = "SELECT COUNT(*) as count FROM sale_items WHERE product_id = ?";
+  db.query(checkSalesSql, [id], (err, result) => {
+    if (err) {
+      console.error("Check product sales error:", err);
+      return res.status(500).json({ message: "Error checking product sales" });
+    }
+    
+    if (result[0].count > 0) {
+      return res.status(400).json({ 
+        message: "Cannot delete product with existing sales records" 
+      });
+    }
+    
+    // If no sales records, proceed with deletion
+    const deleteSql = "DELETE FROM products WHERE id = ?";
+    db.query(deleteSql, [id], (err, result) => {
+      if (err) {
+        console.error("Delete product error:", err);
+        return res.status(500).json({ message: "Error deleting product" });
+      }
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ message: "Product not found" });
+      }
+      res.json({ message: "Product deleted successfully" });
+    });
+  });
+});
+
+// Restock a product
 app.put("/products/:id/restock", (req, res) => {
   const { id } = req.params;
   const { quantity } = req.body;
