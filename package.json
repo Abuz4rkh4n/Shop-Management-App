@@ -13,8 +13,10 @@
     "pkg-frontend": "npm run build && pkg . --targets node18-win-x64 --output dist/shop-app.exe"
   },
   "dependencies": {
+    "@types/jsbarcode": "^3.11.4",
     "axios": "^1.12.2",
     "html2canvas": "^1.4.1",
+    "jsbarcode": "^3.12.1",
     "jspdf": "^3.0.3",
     "lucide-react": "^0.544.0",
     "open": "^10.2.0",

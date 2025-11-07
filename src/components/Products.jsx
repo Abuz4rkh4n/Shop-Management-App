@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import axios from "axios";
 import { FaPlus, FaFilePdf, FaTimes } from "react-icons/fa";
+import JsBarcode from 'jsbarcode';
 
 const Products = () => {
   const api = import.meta.env.VITE_API_URL;
@@ -12,6 +13,7 @@ const Products = () => {
   const [searchId, setSearchId] = useState("");
   const [showBarcodeModal, setShowBarcodeModal] = useState(false);
   const [barcodeProduct, setBarcodeProduct] = useState(null);
+  const [isBarcodeLoading, setIsBarcodeLoading] = useState(false);
   const barcodeSvgRef = useRef(null);
   const [showRestockModal, setShowRestockModal] = useState(false);
   const [restockProduct, setRestockProduct] = useState(null);
@@ -98,12 +100,16 @@ const Products = () => {
   async function addVendor(e) {
     e.preventDefault();
     try {
-      await axios.post(`${api}/vendors`, vendorForm);
+      const token = localStorage.getItem('token');
+      await axios.post(`${api}/vendors`, vendorForm, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
       setShowVendorModal(false);
       setVendorForm({ name: "", phone: "", contact: "", address: "" });
       loadVendors();
     } catch (err) {
       console.error(err);
+      alert(err.response?.data?.message || "Error adding vendor");
     }
   }
 
@@ -229,7 +235,10 @@ const Products = () => {
         }),
       };
 
-      await axios.post(`${api}/receipts`, payload);
+      const token = localStorage.getItem('token');
+      await axios.post(`${api}/receipts`, payload, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
       setShowReceiptModal(false);
       loadProducts();
       loadReceipts();
@@ -295,6 +304,158 @@ Date: ${new Date(receipt.created_at).toLocaleString()}
     }
   }
 
+  // ---------------- Barcode Functions ----------------
+  const printBarcode = () => {
+    if (!barcodeProduct) return;
+    
+    const name = barcodeProduct.name || '';
+    const id = String(barcodeProduct.id);
+    
+    // Create a new window for printing
+    const printWindow = window.open('', '_blank', 'width=300,height=200');
+    if (!printWindow) {
+      alert('Please allow popups to print barcodes');
+      return;
+    }
+    
+    // Create a simple HTML template
+    const template = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Barcode Label</title>
+        <style>
+          @page { 
+            size: 2in 1in; 
+            margin: 0; 
+          }
+          body { 
+            margin: 0; 
+            font-family: Arial, sans-serif; 
+            -webkit-print-color-adjust: exact; 
+          }
+          .label { 
+            width: 2in; 
+            height: 1in; 
+            display: flex; 
+            flex-direction: column; 
+            justify-content: center; 
+            align-items: center; 
+            padding: 2mm; 
+            box-sizing: border-box;
+          }
+          .name { 
+            font-size: 10px; 
+            font-weight: 700; 
+            text-align: center; 
+            max-width: 100%; 
+            white-space: nowrap; 
+            overflow: hidden; 
+            text-overflow: ellipsis; 
+            margin-bottom: 2px;
+          }
+          .id { 
+            font-size: 9px; 
+            margin: 1mm 0; 
+          }
+          .barcode-container {
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-grow: 1;
+            overflow: hidden;
+          }
+          #barcode {
+            max-width: 100%;
+            height: auto;
+            max-height: 30mm;
+          }
+          .no-print { 
+            display: none; 
+          }
+          @media screen {
+            .print-only { 
+              display: none; 
+            }
+            .no-print { 
+              display: block; 
+              position: fixed;
+              top: 10px;
+              left: 10px;
+              padding: 5px 10px;
+              background: #4CAF50;
+              color: white;
+              border: none;
+              border-radius: 3px;
+              cursor: pointer;
+              z-index: 1000;
+            }
+          }
+        </style>
+        <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+      </head>
+      <body>
+        <div class="label">
+          <div class="name">${name.replace(/</g, '&lt;')}</div>
+          <div class="id">ID: ${id}</div>
+          <div class="barcode-container">
+            <svg id="barcode"></svg>
+          </div>
+        </div>
+        <button class="no-print" onclick="window.print()">
+          Print Barcode
+        </button>
+        <script>
+          function generateBarcode() {
+            try {
+              JsBarcode("#barcode", "${id.replace(/"/g, '\\"')}", {
+                format: "CODE128",
+                width: 2,
+                height: 30,
+                displayValue: false,
+                margin: 0,
+                valid: function(valid) {
+                  if (valid) {
+                    console.log('Barcode generated successfully');
+                    setTimeout(() => {
+                      window.focus();
+                      window.print();
+                    }, 100);
+                  } else {
+                    console.error('Invalid barcode value');
+                    document.body.innerHTML += '<div style="color:red;padding:10px;">Error: Invalid barcode value</div>';
+                  }
+                }
+              });
+            } catch (error) {
+              console.error('Barcode error:', error);
+              document.body.innerHTML += '<div style="color:red;padding:10px;">Error: ' + error.message + '</div>';
+            }
+          }
+          
+          // Generate barcode when the window loads
+          if (document.readyState === 'complete') {
+            generateBarcode();
+          } else {
+            window.addEventListener('load', generateBarcode);
+          }
+        </script>
+      </body>
+    </html>`;
+
+    try {
+      // Write the template to the new window
+      printWindow.document.open();
+      printWindow.document.write(template);
+      printWindow.document.close();
+    } catch (error) {
+      console.error('Error opening print window:', error);
+      printWindow.close();
+      alert('Error preparing barcode for printing. Please try again.');
+    }
+  };
+
   // ---------------- UI helpers ----------------
   const filteredProducts = products
     .filter((p) => p.name.toLowerCase().includes(searchProd.toLowerCase()))
@@ -303,26 +464,77 @@ Date: ${new Date(receipt.created_at).toLocaleString()}
       return String(p.id).includes(searchId.trim());
     });
 
-  // Render barcode when modal opens
+  // Render barcode when modal opens or barcode product changes
   useEffect(() => {
-    const render = async () => {
-      if (showBarcodeModal && barcodeProduct && barcodeSvgRef.current) {
-        try {
-          const JsBarcode = (await import('https://esm.sh/jsbarcode@3.11.6')).default;
-          const value = String(barcodeProduct.id);
-          JsBarcode(barcodeSvgRef.current, value, {
-            format: 'CODE128',
-            width: 2,
-            height: 60,
-            displayValue: false,
-            margin: 0,
-          });
-        } catch (e) {
-          console.error('Barcode render error', e);
+    let isMounted = true;
+    
+    const renderBarcode = () => {
+      if (!showBarcodeModal || !barcodeProduct || !barcodeSvgRef.current) {
+        return;
+      }
+
+      setIsBarcodeLoading(true);
+      
+      try {
+        // Get the SVG element
+        const svgElement = barcodeSvgRef.current;
+        if (!(svgElement instanceof SVGSVGElement)) {
+          throw new Error('Invalid SVG element');
+        }
+        
+        // Clear existing content
+        while (svgElement.firstChild) {
+          svgElement.removeChild(svgElement.firstChild);
+        }
+        
+        // Set necessary SVG attributes
+        svgElement.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+        svgElement.setAttribute('width', '200');
+        svgElement.setAttribute('height', '60');
+        
+        // Generate barcode directly on the SVG element
+        const value = String(barcodeProduct.id);
+        
+        JsBarcode(svgElement, value, {
+          format: 'CODE128',
+          width: 2,
+          height: 50,
+          displayValue: false,
+          margin: 5,
+          valid: function(valid) {
+            if (!isMounted) return;
+            
+            if (!valid) {
+              console.error('Invalid barcode value');
+              const errorDiv = document.createElement('div');
+              errorDiv.className = 'text-red-500 text-sm mt-2';
+              errorDiv.textContent = 'Invalid barcode value';
+              svgElement.parentNode?.insertBefore(errorDiv, svgElement.nextSibling);
+            }
+            
+            setIsBarcodeLoading(false);
+          }
+        });
+        
+      } catch (error) {
+        console.error('Barcode render error:', error);
+        if (isMounted) {
+          setIsBarcodeLoading(false);
+          const errorDiv = document.createElement('div');
+          errorDiv.className = 'text-red-500 text-sm mt-2';
+          errorDiv.textContent = 'Failed to generate barcode';
+          barcodeSvgRef.current.parentNode?.appendChild(errorDiv);
         }
       }
     };
-    render();
+    
+    // Small delay to ensure the modal is fully rendered
+    const timer = setTimeout(renderBarcode, 50);
+    
+    return () => {
+      isMounted = false;
+      clearTimeout(timer);
+    };
   }, [showBarcodeModal, barcodeProduct]);
 
   function openBarcodeModal(product) {
@@ -351,48 +563,6 @@ Date: ${new Date(receipt.created_at).toLocaleString()}
     } catch (e) {
       alert(e.response?.data?.message || 'Failed to restock');
     }
-  }
-
-  function printBarcode() {
-    if (!barcodeProduct) return;
-    const name = barcodeProduct.name || '';
-    const id = barcodeProduct.id;
-    const labelHtml = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <style>
-    @page { size: 2in 1in; margin: 0; }
-    body { margin: 0; font-family: Arial, sans-serif; }
-    .label { width: 2in; height: 1in; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 2mm; box-sizing: border-box; }
-    .name { font-size: 10px; font-weight: 700; text-align: center; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .id { font-size: 9px; margin-top: 1mm; }
-    .barcode { margin-top: 1mm; }
-    svg { width: 100%; height: 12mm; }
-  </style>
-  <script type="module">
-    import JsBarcode from 'https://esm.sh/jsbarcode@3.11.6';
-    window.addEventListener('load', () => {
-      const svg = document.getElementById('bc');
-      JsBarcode(svg, '${id}', { format: 'CODE128', width: 2, height: 40, displayValue: false, margin: 0 });
-      setTimeout(() => window.print(), 100);
-    });
-  </script>
-  </head>
-  <body>
-    <div class="label">
-      <div class="name">${name}</div>
-      <div class="id">ID: ${id}</div>
-      <div class="barcode"><svg id="bc"></svg></div>
-    </div>
-  </body>
-</html>`;
-    const win = window.open('', '_blank', 'width=400,height=300');
-    if (!win) return;
-    win.document.open();
-    win.document.write(labelHtml);
-    win.document.close();
   }
 
   return (
@@ -967,7 +1137,7 @@ Date: ${new Date(receipt.created_at).toLocaleString()}
             </button>
             <div id="receipt-template" className="text-sm">
               <div className="text-center mb-4">
-                <div className="text-2xl font-extrabold tracking-wide">Shop Management</div>
+                <div className="text-2xl font-extrabold tracking-wide">Al Madina Center Chori Gali</div>
                 <div className="text-gray-600">Purchase Receipt</div>
                 <div className="text-gray-500 text-xs mt-1"># {activeReceipt.id} • {new Date(activeReceipt.created_at).toLocaleString()}</div>
               </div>
@@ -1054,9 +1224,32 @@ Date: ${new Date(receipt.created_at).toLocaleString()}
             <div className="text-center">
               <div className="font-semibold mb-1">{barcodeProduct.name}</div>
               <div className="text-xs text-gray-600 mb-2">ID: {barcodeProduct.id}</div>
-              <svg ref={barcodeSvgRef}></svg>
+              <div className="min-h-[80px] flex flex-col items-center justify-center p-2">
+                {isBarcodeLoading ? (
+                  <div className="text-sm text-gray-500 mb-2">Generating barcode...</div>
+                ) : (
+                  <div className="w-full max-w-[200px] h-[60px] flex items-center justify-center bg-white p-1 border rounded">
+                    <svg 
+                      ref={barcodeSvgRef} 
+                      className="max-w-full max-h-full"
+                      viewBox="0 0 200 60"
+                      preserveAspectRatio="xMidYMid meet"
+                    />
+                  </div>
+                )}
+              </div>
               <div className="mt-4 flex justify-center gap-2">
-                <button onClick={printBarcode} className="px-4 py-2 bg-primary text-secondary rounded">Print Label</button>
+                <button 
+                  onClick={printBarcode} 
+                  disabled={isBarcodeLoading}
+                  className={`px-4 py-2 rounded ${
+                    isBarcodeLoading 
+                      ? 'bg-gray-400 cursor-not-allowed' 
+                      : 'bg-primary text-secondary hover:opacity-90'
+                  }`}
+                >
+                  {isBarcodeLoading ? 'Generating...' : 'Print Label'}
+                </button>
               </div>
             </div>
           </div>
