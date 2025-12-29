@@ -804,6 +804,7 @@ const Sales = () => {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50">
           <div className="bg-white p-4 rounded-lg shadow-lg w-full max-w-sm">
             <div className="flex justify-between items-center mb-2">
+              <h4 className="font-semibold">Al Madina Center Churi Gali</h4>
               <h4 className="font-semibold">Receipt #{activeReceipt.id}</h4>
               <button onClick={() => setShowReceiptView(false)} className="text-red-600">✕</button>
             </div>

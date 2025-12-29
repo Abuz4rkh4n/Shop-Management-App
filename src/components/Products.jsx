@@ -1303,7 +1303,7 @@ Date: ${new Date(receipt.created_at).toLocaleString()}
             </button>
             <div id="receipt-template" className="text-sm">
               <div className="text-center mb-4">
-                <div className="text-2xl font-extrabold tracking-wide">Al Madina Center Chori Gali</div>
+                <div className="text-2xl font-extrabold tracking-wide">Al Madina Center Churi Gali</div>
                 <div className="text-gray-600">Purchase Receipt</div>
                 <div className="text-gray-500 text-xs mt-1"># {activeReceipt.id} • {new Date(activeReceipt.created_at).toLocaleString()}</div>
               </div>

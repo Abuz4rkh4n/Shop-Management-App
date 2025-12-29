@@ -12,7 +12,7 @@ const BACKUP_INFO_PATH = path.join(__dirname, '..', 'backup-info.json');
 
 // Default backup path - points to Documents/Shop folder
 const getBackupPath = () => {
-  return path.join('C:\\Users\\abuza\\OneDrive\\Documents\\Shop', 'shop_backup.sql');
+  return path.join('C:\\Users\\PMYLS\\Documents\\shop', 'shop_backup.sql');
 };
 
 // Initialize backup info file if it doesn't exist
