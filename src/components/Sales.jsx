@@ -2,18 +2,25 @@ import { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { useAuth } from "../contexts/AuthContext";
 
-const Sales = () => {
+const Sales = ({ onSaleCompleted }) => {
   const [products, setProducts] = useState([]);
   const [workers, setWorkers] = useState([]);
   const [search, setSearch] = useState("");
+  const [searchId, setSearchId] = useState("");
   const [popup, setPopup] = useState("");
   const [showQuickAdd, setShowQuickAdd] = useState(false);
   const [showCheckout, setShowCheckout] = useState(false);
+  const [showCustomAdd, setShowCustomAdd] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState(null);
 
   const [quickQty, setQuickQty] = useState(1);
   const [quickPrice, setQuickPrice] = useState("");
   const [quickWorkerId, setQuickWorkerId] = useState(null);
+
+  const [customName, setCustomName] = useState("");
+  const [customQty, setCustomQty] = useState(1);
+  const [customCost, setCustomCost] = useState("");
+  const [customPrice, setCustomPrice] = useState("");
 
   const [cart, setCart] = useState([]);
   const [sales, setSales] = useState([]);
@@ -114,12 +121,12 @@ const Sales = () => {
         {
           headers: { Authorization: `Bearer ${token}` }
         }
-      );
+      )
       setSales(res.data || []);
-    } catch {
+    }catch {
       setPopup("❌ Error loading sales");
     }
-  }
+  } 
 
   // open quick add modal
   function openQuickAdd(product) {
@@ -176,6 +183,45 @@ const Sales = () => {
     setCart((prev) => prev.filter((_, i) => i !== index));
   }
 
+  function addCustomItem() {
+    const name = (customName || '').trim();
+    const qty = Number(customQty);
+    const cost = Number(customCost);
+    const price = Number(customPrice);
+    if (!name) {
+      setPopup("⚠️ Enter item name");
+      return;
+    }
+    if (!(qty > 0)) {
+      setPopup("⚠️ Enter valid quantity");
+      return;
+    }
+    if (!(cost >= 0)) {
+      setPopup("⚠️ Enter valid cost");
+      return;
+    }
+    if (!(price > 0)) {
+      setPopup("⚠️ Enter valid price");
+      return;
+    }
+    setCart((prev) => [
+      ...prev,
+      {
+        is_custom: true,
+        product_id: null,
+        product_name: name,
+        quantity: qty,
+        sold_price: price,
+        custom_cost_price: cost,
+      },
+    ]);
+    setShowCustomAdd(false);
+    setCustomName("");
+    setCustomQty(1);
+    setCustomCost("");
+    setCustomPrice("");
+  }
+
   async function checkout() {
     if (cart.length === 0) {
       setPopup("⚠️ Cart is empty");
@@ -189,11 +235,11 @@ const Sales = () => {
       setPopup("⚠️ Customer name is required");
       return;
     }
-    const items = cart.map((c) => ({
-      product_id: c.product_id,
-      quantity: c.quantity,
-      sold_price: c.sold_price,
-    }));
+    const items = cart.map((c) => (
+      c.is_custom
+        ? { custom_name: c.product_name, custom_cost_price: c.custom_cost_price ?? 0, quantity: c.quantity, sold_price: c.sold_price }
+        : { product_id: c.product_id, quantity: c.quantity, sold_price: c.sold_price }
+    ));
 
     try {
       const token = localStorage.getItem('token');
@@ -213,10 +259,15 @@ const Sales = () => {
       setCustomerName('');
       setCustomerPhone('');
       setSelectedWorkerId(null);
-      loadProducts();
-      loadSales(salesPage);
-      loadSalesReceipts();
-      // open receipt view for printing
+      // Refresh all data
+      await Promise.all([
+        loadProducts(),
+        loadSales(salesPage),
+        loadSalesReceipts()
+      ]);
+      // Notify app to refresh dashboard
+      if (onSaleCompleted) onSaleCompleted();
+      // Open receipt view for printing
       try {
         const receiptId = res.data?.receiptId;
         if (receiptId) {
@@ -304,9 +355,11 @@ const Sales = () => {
     }
   }
 
-  const filteredProducts = products.filter((p) =>
-    p.name.toLowerCase().includes(search.toLowerCase())
-  );
+  const filteredProducts = products.filter((p) => {
+    const matchesSearch = p.name.toLowerCase().includes(search.toLowerCase());
+    const matchesId = searchId ? p.id.toString().includes(searchId) : true;
+    return matchesSearch && matchesId;
+  });
 
   // receipts filters & pagination
   const [receiptsSearchWorker, setReceiptsSearchWorker] = useState("");
@@ -371,12 +424,22 @@ const Sales = () => {
             >
               {scannerEnabled ? 'Scanner: On' : 'Scanner: Off'}
             </button>
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search product..."
-              className="w-72 border p-2 rounded-lg focus:ring-2 focus:ring-primary"
-            />
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder="Search by name..."
+                className="input input-bordered w-1/2"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+              <input
+                type="text"
+                placeholder="Search by ID..."
+                className="input input-bordered w-1/2"
+                value={searchId}
+                onChange={(e) => setSearchId(e.target.value)}
+              />
+            </div>
             <select
               value={selectedWorkerId ?? ''}
               onChange={(e) => setSelectedWorkerId(e.target.value)}
@@ -387,6 +450,12 @@ const Sales = () => {
                 <option key={w.id} value={w.id}>{w.name}</option>
               ))}
             </select>
+            <button
+              onClick={() => setShowCustomAdd(true)}
+              className="px-5 py-2 rounded-lg font-semibold border bg-white hover:bg-gray-50 transition"
+            >
+              + Custom Item
+            </button>
             <button
               onClick={() => setShowCheckout(true)}
               className="bg-primary text-secondary px-5 py-2 rounded-lg font-semibold hover:bg-opacity-90 transition"
@@ -411,7 +480,7 @@ const Sales = () => {
 
         <div className="grid md:grid-cols-3 gap-6">
           {/* Left: Product list */}
-          <div className="col-span-2">
+          <div className="col-span-2 h-[300px] overflow-y-scroll">
             <div className="grid gap-3">
               {filteredProducts.map((p) => (
                 <div
@@ -419,7 +488,7 @@ const Sales = () => {
                   className="flex justify-between items-center border rounded-lg p-3 hover:shadow-md transition bg-gray-50"
                 >
                   <div>
-                    <div className="font-semibold text-gray-800">{p.name}</div>
+                    <div className="font-semibold text-gray-800">{p.name} <span className="text-xs font-semibold">(ID: {p.id})</span></div>
                     <div className="text-sm text-gray-600">
                       Rs. {p.sell_price} • Stock: {p.quantity}
                     </div>
@@ -705,6 +774,63 @@ const Sales = () => {
         </div>
       )}
 
+      {showCustomAdd && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50">
+          <div className="bg-white p-6 rounded-lg shadow-lg w-full max-w-md">
+            <h3 className="text-lg font-semibold mb-3 text-primary">Add Custom Item</h3>
+            <div className="grid gap-3">
+              <div>
+                <label className="text-sm">Item Name</label>
+                <input
+                  type="text"
+                  className="w-full border p-2 rounded"
+                  value={customName}
+                  onChange={(e) => setCustomName(e.target.value)}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-sm">Quantity</label>
+                  <input
+                    type="number"
+                    className="w-full border p-2 rounded"
+                    value={customQty}
+                    min={1}
+                    onChange={(e) => setCustomQty(Math.max(1, Number(e.target.value)))}
+                  />
+                </div>
+                <div>
+                  <label className="text-sm">Cost (Rs.)</label>
+                  <input
+                    type="number"
+                    className="w-full border p-2 rounded"
+                    value={customCost}
+                    onChange={(e) => setCustomCost(Number(e.target.value))}
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="text-sm">Sell Price (Rs.)</label>
+                <input
+                  type="number"
+                  className="w-full border p-2 rounded"
+                  value={customPrice}
+                  onChange={(e) => setCustomPrice(Number(e.target.value))}
+                />
+              </div>
+              <div className="text-sm text-gray-600">
+                Line Profit: Rs. {Math.max(0, Number(customPrice || 0) - Number(customCost || 0)) * Number(customQty || 0)}
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <button onClick={() => setShowCustomAdd(false)} className="px-4 py-2 border rounded">Cancel</button>
+              <button onClick={addCustomItem} className="bg-primary text-secondary px-4 py-2 rounded">Add</button>
+            </div>
+          </div>
+        </div>
+      )
+    }
+
       {/* Checkout Modal */}
       {showCheckout && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50">
@@ -851,7 +977,7 @@ function printThermalReceipt(receipt) {
     .ticket { width: ${widthMm}mm; padding: 6mm 4mm; box-sizing: border-box; }
     .center { text-align: center; }
     .row { display: flex; justify-content: space-between; font-size: 12px; }
-    .title { font-weight: 700; font-size: 16px; margin-bottom: 6px; }
+    .title { font-weight: 600; font-size: 16px; margin-bottom: 6px; text-align: center; }
     .muted { color: #555; font-size: 11px; }
     .line { border-top: 1px dashed #333; margin: 6px 0; }
     .item { display: flex; justify-content: space-between; font-size: 12px; margin: 2px 0; }
@@ -859,7 +985,8 @@ function printThermalReceipt(receipt) {
 </head>
 <body>
   <div class="ticket">
-    <div class="center title">Sales Receipt #${receipt.id}</div>
+  <div class="title">Al Madina Center Churi Gali</div>
+    <div class="center">Sales Receipt #${receipt.id}</div>
     <div class="center muted">${new Date(receipt.created_at).toLocaleString()}</div>
     <div class="line"></div>
     <div class="row"><div>Worker</div><div><b>${receipt.worker_name || ''}</b></div></div>
@@ -872,6 +999,7 @@ function printThermalReceipt(receipt) {
     <div class="line"></div>
     <div class="row" style="font-weight:700"><div>Total</div><div>Rs. ${Number(receipt.total_amount).toFixed(2)}</div></div>
     <div class="center muted" style="margin-top:8px;">Thanks for your purchase!</div>
+    <div class="center muted" style="margin-top:8px;">Developed by: Abuzar (03108112857)</div>
   </div>
   <script>
     window.addEventListener('load', () => setTimeout(() => window.print(), 100));

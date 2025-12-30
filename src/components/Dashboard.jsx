@@ -31,6 +31,7 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(false);
   const [kpiLoading, setKpiLoading] = useState(false);
 
+
   useEffect(() => {
     fetchAll();
   }, [period, from, to]);
@@ -370,32 +371,59 @@ const Dashboard = () => {
               <h3 className="text-xl font-semibold text-primary">
                 Recent Sales
               </h3>
-              <div className="text-sm text-gray-500">Latest transactions</div>
+              <div className="text-sm text-gray-500">Latest receipts</div>
             </div>
 
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-primary text-secondary">
-                    <th className="p-2 text-left">When</th>
-                    <th className="p-2 text-left">Product</th>
-                    <th className="p-2 text-right">Qty</th>
+                    <th className="p-2 text-left">Receipt #</th>
+                    <th className="p-2 text-left">Customer</th>
+                    <th className="p-2 text-left">Items</th>
                     <th className="p-2 text-right">Total</th>
-                    <th className="p-2 text-left">Worker</th>
+                    <th className="p-2 text-center">Status</th>
+                    <th className="p-2 text-right">Date</th>
                   </tr>
                 </thead>
                 <tbody>
                   {recentSales.map((s) => (
                     <tr key={s.id} className="border-b hover:bg-gray-50">
+                      <td className="p-2 font-mono">#{s.id}</td>
                       <td className="p-2">
-                        {new Date(s.created_at).toLocaleString()}
+                        <div className="font-medium">{s.customer_name || 'Walk-in'}</div>
+                        {s.customer_phone && (
+                          <div className="text-xs text-gray-500">{s.customer_phone}</div>
+                        )}
                       </td>
-                      <td className="p-2">{s.product_name}</td>
-                      <td className="p-2 text-right">{s.quantity}</td>
-                      <td className="p-2 text-right">
-                        Rs. {fmt(s.total_amount)}
+                      <td className="p-2">
+                        <div className="max-w-xs truncate" title={s.items_summary}>
+                          {s.items_summary}
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          {s.item_count} {s.item_count === 1 ? 'item' : 'items'}
+                        </div>
                       </td>
-                      <td className="p-2">{s.worker_name}</td>
+                      <td className="p-2 text-right font-medium">
+                        Rs. {fmt(s.total_amount?.toFixed ? s.total_amount.toFixed(2) : s.total_amount)}
+                      </td>
+                      <td className="p-2 text-center">
+                        <span className={`inline-block px-2 py-1 text-xs rounded-full ${
+                          s.payment_status === 'paid' 
+                            ? 'bg-green-100 text-green-800' 
+                            : s.payment_status === 'refunded' 
+                              ? 'bg-red-100 text-red-800' 
+                              : 'bg-yellow-100 text-yellow-800'
+                        }`}>
+                          {s.payment_status}
+                        </span>
+                      </td>
+                      <td className="p-2 text-right whitespace-nowrap">
+                        {new Date(s.created_at).toLocaleDateString()}
+                        <div className="text-xs text-gray-500">
+                          {new Date(s.created_at).toLocaleTimeString()}
+                        </div>
+                      </td>
                     </tr>
                   ))}
                 </tbody>

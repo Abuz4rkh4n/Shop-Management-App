@@ -544,11 +544,11 @@ app.post("/sales/receipts/:id/return", (req, res) => {
         );
       });
 
-      // If no items remain, mark status accordingly
+      // If no items remain, mark status as refunded
       if (cnt === 0) {
         await new Promise((resolve, reject) => {
           db.query(
-            "UPDATE sales_receipts SET payment_status = 'all product got removed' WHERE id = ?",
+            "UPDATE sales_receipts SET payment_status = 'refunded' WHERE id = ?",
             [id],
             (err) => (err ? reject(err) : resolve())
           );
@@ -1363,55 +1363,75 @@ app.post("/sales/receipts", (req, res) => {
       let totalAmount = 0;
 
       for (const it of items) {
-        const { product_id, quantity, sold_price } = it;
+        const { product_id, custom_name, custom_cost_price, quantity, sold_price } = it || {};
+        const hasProduct = !!product_id;
+        const name = (custom_name || "").trim();
         const qty = parseInt(quantity || 0, 10);
+        const cost = parseFloat(custom_cost_price ?? 0);
         const price = parseFloat(sold_price || 0);
-        if (!product_id || qty <= 0 || !price) {
+
+        if (!(qty > 0) || !(price > 0)) {
           throw { status: 400, message: "Invalid item data" };
         }
-
-        // Lock and check stock
-        const rows = await new Promise((resolve, reject) => {
-          db.query(
-            "SELECT id, quantity FROM products WHERE id = ? FOR UPDATE",
-            [product_id],
-            (err, result) => (err ? reject(err) : resolve(result))
-          );
-        });
-        if (!rows || rows.length === 0) {
-          throw { status: 404, message: `Product ${product_id} not found` };
-        }
-        const product = rows[0];
-        if (product.quantity < qty) {
-          throw { status: 400, message: `Insufficient stock for product id ${product_id}` };
+        if (!hasProduct && !name) {
+          throw { status: 400, message: "Custom item requires name" };
         }
 
-        // Insert receipt item
-        await new Promise((resolve, reject) => {
-          db.query(
-            "INSERT INTO sales_receipt_items (receipt_id, product_id, quantity, sold_price) VALUES (?, ?, ?, ?)",
-            [receiptId, product_id, qty, price],
-            (err) => (err ? reject(err) : resolve())
-          );
-        });
+        if (hasProduct) {
+          // Lock and check stock for normal product
+          const rows = await new Promise((resolve, reject) => {
+            db.query(
+              "SELECT id, quantity FROM products WHERE id = ? FOR UPDATE",
+              [product_id],
+              (err, result) => (err ? reject(err) : resolve(result))
+            );
+          });
+          if (!rows || rows.length === 0) {
+            throw { status: 404, message: `Product ${product_id} not found` };
+          }
+          const product = rows[0];
+          if (product.quantity < qty) {
+            throw { status: 400, message: `Insufficient stock for product id ${product_id}` };
+          }
 
-        // Mirror into sales table for reporting
-        await new Promise((resolve, reject) => {
-          db.query(
-            "INSERT INTO sales (product_id, worker_id, quantity, sold_price, total_amount, payment_status, customer_name, customer_phone) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            [product_id, worker_id, qty, price, qty * price, normalizedStatus, customerName || null, customerPhone || null],
-            (err) => (err ? reject(err) : resolve())
-          );
-        });
+          // Insert normal receipt item
+          await new Promise((resolve, reject) => {
+            db.query(
+              "INSERT INTO sales_receipt_items (receipt_id, product_id, quantity, sold_price) VALUES (?, ?, ?, ?)",
+              [receiptId, product_id, qty, price],
+              (err) => (err ? reject(err) : resolve())
+            );
+          });
 
-        // Decrement stock
-        await new Promise((resolve, reject) => {
-          db.query(
-            "UPDATE products SET quantity = quantity - ? WHERE id = ?",
-            [qty, product_id],
-            (err) => (err ? reject(err) : resolve())
-          );
-        });
+          // Mirror into sales table for reporting
+          await new Promise((resolve, reject) => {
+            db.query(
+              "INSERT INTO sales (product_id, worker_id, quantity, sold_price, total_amount, payment_status, customer_name, customer_phone) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+              [product_id, worker_id, qty, price, qty * price, normalizedStatus, customerName || null, customerPhone || null],
+              (err) => (err ? reject(err) : resolve())
+            );
+          });
+
+          // Decrement stock
+          await new Promise((resolve, reject) => {
+            db.query(
+              "UPDATE products SET quantity = quantity - ? WHERE id = ?",
+              [qty, product_id],
+              (err) => (err ? reject(err) : resolve())
+            );
+          });
+        } else {
+          // Insert custom (temporary) receipt item
+          // Requires: ALTER TABLE sales_receipt_items ADD COLUMN custom_name VARCHAR(255) NULL; and product_id NULL
+          await new Promise((resolve, reject) => {
+            db.query(
+              "INSERT INTO sales_receipt_items (receipt_id, product_id, custom_name, custom_cost_price, quantity, sold_price) VALUES (?, NULL, ?, ?, ?, ?)",
+              [receiptId, name, cost, qty, price],
+              (err) => (err ? reject(err) : resolve())
+            );
+          });
+          // No stock update and no mirror into `sales` for custom item
+        }
 
         totalAmount += qty * price;
       }
@@ -1481,7 +1501,7 @@ app.get("/sales/receipts/:id", (req, res) => {
     WHERE sr.id = ?
   `;
   const sqlItems = `
-    SELECT sri.*, p.name AS product_name
+    SELECT sri.*, COALESCE(p.name, sri.custom_name) AS product_name
     FROM sales_receipt_items sri
     LEFT JOIN products p ON p.id = sri.product_id
     WHERE sri.receipt_id = ?
@@ -1625,36 +1645,48 @@ app.put("/sales/:id/payment", (req, res) => {
 
 // -------- DASHBOARD / ANALYTICS ROUTES --------
 // Helper to build WHERE clause from query (period or from/to)
-function buildWhereFromQuery(q) {
+function buildWhereFromQuery(q, opts = {}) {
   const { period, from, to } = q || {};
-  let where = "";
+  const { dateAlias = "sr", includeRefundFilter = false } = opts;
+  const where = [];
+
+  const a = dateAlias;
+
+  // Add date filter against the provided alias (sr or s)
   if (from && to) {
-    where = `WHERE s.created_at BETWEEN '${from}' AND '${to}'`;
+    where.push(`${a}.created_at BETWEEN '${from}' AND '${to}'`);
   } else if (period === "day") {
-    where = "WHERE s.created_at >= NOW() - INTERVAL 1 DAY";
+    where.push(`${a}.created_at >= NOW() - INTERVAL 1 DAY`);
   } else if (period === "week") {
-    where = "WHERE s.created_at >= NOW() - INTERVAL 1 WEEK";
+    where.push(`${a}.created_at >= NOW() - INTERVAL 1 WEEK`);
   } else if (period === "month") {
-    where = "WHERE s.created_at >= NOW() - INTERVAL 1 MONTH";
+    where.push(`${a}.created_at >= NOW() - INTERVAL 1 MONTH`);
   } else if (period === "year") {
-    where = "WHERE s.created_at >= NOW() - INTERVAL 1 YEAR";
-  } // else all => no where
-  return where;
+    where.push(`${a}.created_at >= NOW() - INTERVAL 1 YEAR`);
+  }
+
+  // Optionally exclude refunded receipts (only valid when alias is sr)
+  if (includeRefundFilter) {
+    where.push(`sr.payment_status != 'refunded'`);
+  }
+
+  return where.length ? `WHERE ${where.join(" AND ")}` : "";
 }
 
 // GET /dashboard/summary?period=week       or ?from=2025-01-01&to=2025-01-31
 app.get("/dashboard/summary", (req, res) => {
   try {
-    const where = buildWhereFromQuery(req.query);
+    const where = buildWhereFromQuery(req.query, { dateAlias: 'sr', includeRefundFilter: true });
 
     // total sales count, amount, profit, total workers, total products
     const sql = `
       SELECT
-        IFNULL(SUM(s.quantity),0) AS total_items_sold,
-        IFNULL(SUM(s.quantity * s.sold_price),0) AS total_sales_amount,
-        IFNULL(SUM(s.quantity * (s.sold_price - IFNULL(p.retail_price,0))),0) AS total_profit
-      FROM sales s
-      LEFT JOIN products p ON p.id = s.product_id
+        IFNULL(SUM(sri.quantity),0) AS total_items_sold,
+        IFNULL(SUM(sri.quantity * sri.sold_price),0) AS total_sales_amount,
+        IFNULL(SUM(sri.quantity * (sri.sold_price - COALESCE(p.retail_price, sri.custom_cost_price, 0))),0) AS total_profit
+      FROM sales_receipts sr
+      LEFT JOIN sales_receipt_items sri ON sri.receipt_id = sr.id
+      LEFT JOIN products p ON p.id = sri.product_id
       ${where};
     `;
     db.query(sql, (err, rows) => {
@@ -1706,16 +1738,17 @@ app.get("/dashboard/summary", (req, res) => {
 app.get("/dashboard/leaderboard", (req, res) => {
   try {
     const limit = parseInt(req.query.limit || "10", 10);
-    const where = buildWhereFromQuery(req.query);
+    const where = buildWhereFromQuery(req.query, { dateAlias: 'sr', includeRefundFilter: true });
 
     const sql = `
       SELECT w.id, w.name,
-             COUNT(s.id) AS sales_count,
-             IFNULL(SUM(s.quantity * s.sold_price),0) AS sales_amount,
-             IFNULL(SUM(s.quantity * (s.sold_price - IFNULL(p.retail_price,0))),0) AS profit
+             COUNT(sri.id) AS sales_count,
+             IFNULL(SUM(sri.quantity * sri.sold_price),0) AS sales_amount,
+             IFNULL(SUM(sri.quantity * (sri.sold_price - COALESCE(p.retail_price, sri.custom_cost_price, 0))),0) AS profit
       FROM workers w
-      LEFT JOIN sales s ON s.worker_id = w.id
-      LEFT JOIN products p ON p.id = s.product_id
+      LEFT JOIN sales_receipts sr ON sr.worker_id = w.id
+      LEFT JOIN sales_receipt_items sri ON sri.receipt_id = sr.id
+      LEFT JOIN products p ON p.id = sri.product_id
       ${where}
       GROUP BY w.id, w.name
       ORDER BY sales_amount DESC
@@ -1739,15 +1772,16 @@ app.get("/dashboard/leaderboard", (req, res) => {
 app.get("/dashboard/top-products", (req, res) => {
   try {
     const limit = parseInt(req.query.limit || "10", 10);
-    const where = buildWhereFromQuery(req.query);
+    const where = buildWhereFromQuery(req.query, { dateAlias: 'sr', includeRefundFilter: true });
 
     const sql = `
       SELECT p.id, p.name,
-             IFNULL(SUM(s.quantity),0) AS units_sold,
-             IFNULL(SUM(s.quantity * s.sold_price),0) AS total_sales_amount,
-             IFNULL(SUM(s.quantity * (s.sold_price - IFNULL(p.retail_price,0))),0) AS total_profit
+             IFNULL(SUM(sri.quantity),0) AS units_sold,
+             IFNULL(SUM(sri.quantity * sri.sold_price),0) AS total_sales_amount,
+             IFNULL(SUM(sri.quantity * (sri.sold_price - COALESCE(p.retail_price, sri.custom_cost_price, 0))),0) AS total_profit
       FROM products p
-      LEFT JOIN sales s ON s.product_id = p.id
+      LEFT JOIN sales_receipt_items sri ON sri.product_id = p.id
+      LEFT JOIN sales_receipts sr ON sr.id = sri.receipt_id
       ${where}
       GROUP BY p.id, p.name
       ORDER BY units_sold DESC
@@ -1771,12 +1805,29 @@ app.get("/dashboard/recent-sales", (req, res) => {
   try {
     const limit = parseInt(req.query.limit || "10", 10);
     const sql = `
-      SELECT s.id, s.product_id, p.name AS product_name, s.worker_id, w.name AS worker_name,
-             s.quantity, s.sold_price, (s.quantity * s.sold_price) AS total_amount, s.created_at
-      FROM sales s
-      LEFT JOIN products p ON p.id = s.product_id
-      LEFT JOIN workers w ON w.id = s.worker_id
-      ORDER BY s.created_at DESC
+      SELECT 
+        sr.id,
+        sr.created_at,
+        sr.total_amount,
+        sr.payment_status,
+        sr.customer_name,
+        sr.customer_phone,
+        w.name AS worker_name,
+        COUNT(sri.id) AS item_count,
+        GROUP_CONCAT(
+          CONCAT(
+            sri.quantity,
+            'x ',
+            COALESCE(p.name, sri.custom_name)
+          ) 
+          SEPARATOR ', '
+        ) AS items_summary
+      FROM sales_receipts sr
+      LEFT JOIN sales_receipt_items sri ON sr.id = sri.receipt_id
+      LEFT JOIN products p ON sri.product_id = p.id
+      LEFT JOIN workers w ON sr.worker_id = w.id
+      GROUP BY sr.id
+      ORDER BY sr.created_at DESC
       LIMIT ?
     `;
     db.query(sql, [limit], (err, rows) => {

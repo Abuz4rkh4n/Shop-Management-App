@@ -2,10 +2,11 @@ import { useEffect, useState } from "react";
 import axios from "axios";
 import { ArrowLeft, Package, User, Calendar } from "lucide-react";
 
-const Returns = () => {
+const Returns = ({ onReturnProcessed }) => {
   const [returns, setReturns] = useState([]);
   const [receipts, setReceipts] = useState([]);
   const [workers, setWorkers] = useState([]);
+  const [loading, setLoading] = useState(false);
   const [popup, setPopup] = useState("");
   const [showReturnForm, setShowReturnForm] = useState(false);
   const [selectedReceiptId, setSelectedReceiptId] = useState("");
@@ -109,8 +110,16 @@ const Returns = () => {
 
       setPopup("✅ Return processed successfully");
       setShowReturnForm(false);
-      loadReturns();
-      loadSalesReceipts();
+      // Refresh all data
+      await Promise.all([
+        loadReturns(),
+        loadSalesReceipts()
+      ]);
+      
+      // Notify app to refresh dashboard
+      if (onReturnProcessed) {
+        await onReturnProcessed();
+      }
     } catch (err) {
       setPopup("❌ Error processing return");
     }
