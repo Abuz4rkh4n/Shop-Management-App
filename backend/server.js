@@ -8,6 +8,7 @@ import { v4 as uuidv4 } from "uuid";
 import { authenticateToken } from "./middleware/auth.js";
 import { sendVerificationEmail, sendAdminInviteEmail } from "./utils/email.js";
 import backupRoutes from "./routes/backupRoutes.js";
+import dayManagementRoutes, { setDayManagementDb } from "./routes/dayManagementRoutes.js";
 import { initBackupSystem } from "./utils/backupService.js";
 
 dotenv.config();
@@ -21,6 +22,9 @@ initBackupSystem();
 
 // ========== BACKUP ROUTES ==========
 app.use('/api', backupRoutes);
+
+// ========== DAY MANAGEMENT ROUTES ==========
+app.use('/day-management', dayManagementRoutes);
 
 // ========== AUTHENTICATION ROUTES (public) ==========
 
@@ -37,6 +41,9 @@ db.connect((err) => {
     return;
   }
   console.log("Connected to MySQL");
+  
+  // Set database connection for day management routes
+  setDayManagementDb(db);
 });
 
 // Helper function to generate verification code
@@ -571,47 +578,64 @@ app.post("/sales/receipts/:id/return", (req, res) => {
   });
 });
 
-// Get product by ID (useful for barcode scanners that emit product ID)
+// Get product by ID or barcode (useful for barcode scanners)
 app.get("/products/:id", (req, res) => {
   const { id } = req.params;
-  db.query("SELECT * FROM products WHERE id = ?", [id], (err, rows) => {
+  // Search by barcode first, then by ID (prioritize barcode for scanner products)
+  db.query("SELECT * FROM products WHERE barcode = ? LIMIT 1", [id], (err, rows) => {
     if (err) {
-      console.error("Error fetching product by id:", err);
+      console.error("Error fetching product:", err);
       return res.status(500).json({ message: "DB error" });
     }
-    if (!rows || rows.length === 0) {
-      return res.status(404).json({ message: "Product not found" });
+    if (rows && rows.length > 0) {
+      // Found by barcode
+      return res.json(rows[0]);
     }
-    res.json(rows[0]);
+    
+    // If not found by barcode, search by ID
+    db.query("SELECT * FROM products WHERE id = ?", [id], (err, rows) => {
+      if (err) {
+        console.error("Error fetching product:", err);
+        return res.status(500).json({ message: "DB error" });
+      }
+      if (!rows || rows.length === 0) {
+        return res.status(404).json({ message: "Product not found" });
+      }
+      res.json(rows[0]);
+    });
   });
 });
 
 // Add single product
 app.post("/products", (req, res) => {
   const {
+    id, // Custom ID for barcode products (will be ignored)
     name,
     description = "",
     retail_price = 0,
     sell_price = 0,
     quantity = 0,
+    barcode, // Barcode field
   } = req.body;
 
-  const sql =
-    "INSERT INTO products (name, description, retail_price, sell_price, quantity) VALUES (?, ?, ?, ?, ?)";
-  db.query(
-    sql,
-    [name, description, retail_price, sell_price, quantity],
-    (err, result) => {
-      if (err) {
-        console.error("Error adding product:", err);
-        if (err.code === "ER_DUP_ENTRY") {
-          return res.status(400).json({ message: "Product already exists" });
-        }
-        return res.status(500).json({ message: "DB error" });
+  // Always use auto-increment for ID, store barcode separately
+  const sql = "INSERT INTO products (name, description, retail_price, sell_price, quantity, barcode) VALUES (?, ?, ?, ?, ?, ?)";
+  const params = [name, description, retail_price, sell_price, quantity, barcode];
+
+  db.query(sql, params, (err, result) => {
+    if (err) {
+      console.error("Error adding product:", err);
+      if (err.code === "ER_DUP_ENTRY") {
+        return res.status(400).json({ message: "Product already exists" });
       }
-      res.json({ message: "Product added", id: result.insertId });
+      return res.status(500).json({ message: "DB error" });
     }
-  );
+    res.json({ 
+      message: "Product added", 
+      id: result.insertId,
+      barcode: barcode || result.insertId
+    });
+  });
 });
 
 // Restock product
@@ -754,7 +778,7 @@ app.delete("/vendors/:id", (req, res) => {
 
 // Create receipt
 app.post("/receipts", (req, res) => {
-  const { vendor_id, invoice_no = null, items } = req.body;
+  const { vendor_id, invoice_no = null, items, amount_paid = 0, payment_notes = null } = req.body;
   if (!vendor_id || !Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ message: "Invalid payload" });
   }
@@ -767,8 +791,8 @@ app.post("/receipts", (req, res) => {
     }
 
     const sqlReceipt =
-      "INSERT INTO receipts (vendor_id, invoice_no, total_amount) VALUES (?, ?, ?)";
-    db.query(sqlReceipt, [vendor_id, invoice_no, 0], (err, result) => {
+      "INSERT INTO receipts (vendor_id, invoice_no, total_amount, amount_paid, payment_notes) VALUES (?, ?, ?, ?, ?)";
+    db.query(sqlReceipt, [vendor_id, invoice_no, 0, amount_paid, payment_notes], (err, result) => {
       if (err) {
         console.error("Error inserting receipt:", err);
         return db.rollback(() => res.status(500).json({ message: "DB error" }));
@@ -779,10 +803,13 @@ app.post("/receipts", (req, res) => {
 
       const processItems = (i) => {
         if (i >= items.length) {
-          // Update receipt total
+          // Update receipt total and payment status
+          const paymentStatus = amount_paid >= totalAmount ? 'paid' : 
+                               amount_paid > 0 ? 'partial' : 'unpaid';
+          
           db.query(
-            "UPDATE receipts SET total_amount = ? WHERE id = ?",
-            [totalAmount, receiptId],
+            "UPDATE receipts SET total_amount = ?, payment_status = ? WHERE id = ?",
+            [totalAmount, paymentStatus, receiptId],
             (err) => {
               if (err) {
                 console.error("Error updating total:", err);
@@ -797,7 +824,14 @@ app.post("/receipts", (req, res) => {
                     res.status(500).json({ message: "DB error" })
                   );
                 }
-                res.json({ message: "Receipt created", receiptId });
+                res.json({ 
+                  message: "Receipt created", 
+                  receiptId,
+                  totalAmount,
+                  amountPaid: amount_paid,
+                  amountRemaining: totalAmount - amount_paid,
+                  paymentStatus
+                });
               });
             }
           );
@@ -931,7 +965,7 @@ app.post("/receipts", (req, res) => {
 app.get("/receipts", (req, res) => {
   const sql = `
     SELECT r.id, r.vendor_id, v.name AS vendor_name, r.invoice_no,
-           r.total_amount, r.created_at,
+           r.total_amount, r.amount_paid, r.amount_remaining, r.payment_status, r.payment_notes, r.created_at,
            COUNT(ri.id) AS items_count
     FROM receipts r
     JOIN vendors v ON r.vendor_id = v.id
@@ -954,7 +988,7 @@ app.get("/receipts/:id", (req, res) => {
 
   const sqlReceipt = `
     SELECT r.id, r.vendor_id, v.name AS vendor_name, r.invoice_no,
-           r.total_amount, r.created_at
+           r.total_amount, r.amount_paid, r.amount_remaining, r.payment_status, r.payment_notes, r.created_at
     FROM receipts r
     JOIN vendors v ON r.vendor_id = v.id
     WHERE r.id = ?
@@ -981,36 +1015,52 @@ app.get("/receipts/:id", (req, res) => {
   });
 });
 
-// Get single receipt
-app.get("/receipts/:id", (req, res) => {
+// Update receipt payment
+app.put("/receipts/:id/payment", (req, res) => {
   const { id } = req.params;
-  const sql = `
-    SELECT r.*, v.name AS vendor_name 
-    FROM receipts r 
-    LEFT JOIN vendors v ON v.id = r.vendor_id 
-    WHERE r.id = ?
-  `;
-  db.query(sql, [id], (err, rows) => {
+  const { amount_paid, payment_notes } = req.body;
+  
+  if (amount_paid === undefined || amount_paid < 0) {
+    return res.status(400).json({ message: "Invalid amount paid" });
+  }
+
+  // First get the receipt to calculate remaining amount and status
+  db.query("SELECT total_amount FROM receipts WHERE id = ?", [id], (err, rows) => {
     if (err) {
       console.error("Error fetching receipt:", err);
       return res.status(500).json({ message: "DB error" });
     }
     if (!rows || rows.length === 0) {
-      return res.status(404).json({ message: "Not found" });
+      return res.status(404).json({ message: "Receipt not found" });
     }
 
-    const receipt = rows[0];
-    db.query(
-      "SELECT * FROM receipt_items WHERE receipt_id = ? ORDER BY id",
-      [id],
-      (err, items) => {
-        if (err) {
-          console.error("Error fetching receipt items:", err);
-          return res.status(500).json({ message: "DB error" });
-        }
-        res.json({ ...receipt, items });
+    const totalAmount = rows[0].total_amount;
+    const paymentStatus = amount_paid >= totalAmount ? 'paid' : 
+                         amount_paid > 0 ? 'partial' : 'unpaid';
+
+    // Update payment information
+    const sql = `
+      UPDATE receipts 
+      SET amount_paid = ?, payment_status = ?, payment_notes = ?
+      WHERE id = ?
+    `;
+    
+    db.query(sql, [amount_paid, paymentStatus, payment_notes, id], (err, result) => {
+      if (err) {
+        console.error("Error updating payment:", err);
+        return res.status(500).json({ message: "DB error" });
       }
-    );
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ message: "Receipt not found" });
+      }
+
+      res.json({
+        message: "Payment updated successfully",
+        amountPaid: amount_paid,
+        amountRemaining: totalAmount - amount_paid,
+        paymentStatus
+      });
+    });
   });
 });
 
@@ -1452,6 +1502,19 @@ app.post("/sales/receipts", (req, res) => {
             return res.status(500).json({ message: "Commit failed" });
           });
         } else {
+          // Update day management totals if a day is open
+          const updateDaySql = `
+            UPDATE day_management 
+            SET total_sales = total_sales + ?,
+                total_receipts = total_receipts + 1
+            WHERE day_date = CURDATE() AND status = 'open'
+          `;
+          db.query(updateDaySql, [totalAmount], (err) => {
+            if (err) {
+              console.error("Error updating day management:", err);
+            }
+          });
+          
           res.json({ message: "Receipt created", receiptId, total_amount: totalAmount });
         }
       });

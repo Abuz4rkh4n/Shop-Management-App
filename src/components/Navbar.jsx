@@ -11,6 +11,7 @@ import {
   LogOut,
   User,
   HardDrive,
+  Calendar,
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 
@@ -26,6 +27,7 @@ const Navbar = () => {
     { key: 'workers', name: "Workers", path: "/workers", icon: <Users size={22} />, show: isSuper || !!permissions.workers },
     { key: 'sales', name: "Sales", path: "/sales", icon: <ShoppingCart size={22} />, show: isSuper || !!permissions.sales },
     { key: 'returns', name: "Returns", path: "/returns", icon: <RotateCcw size={22} />, show: isSuper || !!permissions.returns },
+    { key: 'day-management', name: "Day Management", path: "/day-management", icon: <Calendar size={22} />, show: isSuper || !!permissions.day_management },
     { key: 'admins', name: "Admins", path: "/admins", icon: <Users size={22} />, show: isSuper },
     { key: 'backup', name: "Backup & Restore", path: "/backup", icon: <HardDrive size={22} />, show: isSuper || user?.role === 'admin' },
   ].filter(m => m.show);

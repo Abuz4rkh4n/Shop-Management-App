@@ -108,7 +108,7 @@ const BackupRestore = () => {
             </span>
           </p>
           <p className="text-sm text-gray-500 mt-1">
-            Automatic backups are created every 10 Seconds and saved to your Google Drive folder.
+            Automatic backups are created every 5 minutes and saved to your Google Drive folder.
           </p>
         </div>
 

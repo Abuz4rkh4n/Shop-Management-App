@@ -10,9 +10,9 @@ const Workers = () => {
     phone: "",
     cnic: "",
     salary: "",
-    position: "",
+    role: "",
     benefits: "",
-    date_joined: "",
+    joining_date: "",
   });
 
   const [popup, setPopup] = useState("");
@@ -78,9 +78,9 @@ const Workers = () => {
         phone: "",
         cnic: "",
         salary: "",
-        position: "",
+        role: "",
         benefits: "",
-        date_joined: "",
+        joining_date: "",
       });
       setShowForm(false);
       fetchWorkers();
@@ -338,9 +338,9 @@ const Workers = () => {
               <input
                 type="date"
                 className="border p-2 rounded shadow-sm"
-                value={formData.date_joined}
+                value={formData.joining_date}
                 onChange={(e) =>
-                  setFormData({ ...formData, date_joined: e.target.value })
+                  setFormData({ ...formData, joining_date: e.target.value })
                 }
               />
             </div>
@@ -390,9 +390,9 @@ const Workers = () => {
               <input
                 type="date"
                 className="border p-2 rounded shadow-sm"
-                value={editWorker.date_joined?.split("T")[0] || ""}
+                value={editWorker.joining_date?.split("T")[0] || ""}
                 onChange={(e) =>
-                  setEditWorker({ ...editWorker, date_joined: e.target.value })
+                  setEditWorker({ ...editWorker, joining_date: e.target.value })
                 }
               />
             </div>

@@ -12,6 +12,7 @@ import Returns from "./components/Returns";
 import Login from "./components/auth/Login";
 import Admins from "./components/admin/Admins";
 import BackupRestore from "./components/BackupRestore";
+import DayManagement from "./components/DayManagement";
 
 const App = () => {
   const [dashboardRefreshKey, setDashboardRefreshKey] = useState(0);
@@ -57,6 +58,7 @@ const App = () => {
                             <Route path="/products" element={<Products />} />
                             <Route path="/workers" element={<Workers />} />
                             <Route path="/sales" element={<Sales />} />
+                            <Route path="/day-management" element={<DayManagement />} />
                             <Route 
                               path="/returns" 
                               element={

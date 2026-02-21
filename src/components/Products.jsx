@@ -18,6 +18,11 @@ const Products = () => {
   const [showRestockModal, setShowRestockModal] = useState(false);
   const [restockProduct, setRestockProduct] = useState(null);
   const [restockQty, setRestockQty] = useState(1);
+  
+  // Pagination states
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(50);
+  const [loading, setLoading] = useState(false);
 
   // vendors
   const [vendors, setVendors] = useState([]);
@@ -36,12 +41,27 @@ const Products = () => {
     vendor_id: "",
     invoice_no: "",
     items: [],
+    amount_paid: 0,
+    payment_notes: "",
   });
 
   // product modals
   const [showProductModal, setShowProductModal] = useState(false);
+  const [showBarcodeProductModal, setShowBarcodeProductModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
+
+  // barcode scanning state
+  const [barcodeBuffer, setBarcodeBuffer] = useState("");
+  const [scannedBarcode, setScannedBarcode] = useState("");
+  const [barcodeForm, setBarcodeForm] = useState({
+    barcode: "",
+    name: "",
+    description: "",
+    retail_price: "",
+    sell_price: "",
+    quantity: 0,
+  });
   const [productForm, setProductForm] = useState({
     name: "",
     description: "",
@@ -53,6 +73,14 @@ const Products = () => {
   const receiptPrintRef = useRef();
   const [showReceiptView, setShowReceiptView] = useState(false);
   const [activeReceipt, setActiveReceipt] = useState(null);
+  
+  // Payment modal state
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [paymentForm, setPaymentForm] = useState({
+    amount_paid: 0,
+    payment_notes: "",
+  });
+  const [editingReceipt, setEditingReceipt] = useState(null);
 
   useEffect(() => {
     loadAll();
@@ -187,12 +215,64 @@ const Products = () => {
     }
   }
 
+  // Barcode product functions
+  async function addProductWithBarcode(e) {
+    e.preventDefault();
+    try {
+      const token = localStorage.getItem('token');
+      // Only send barcode field, let backend handle auto-increment ID
+      const productData = {
+        name: barcodeForm.name,
+        description: barcodeForm.description,
+        retail_price: barcodeForm.retail_price,
+        sell_price: barcodeForm.sell_price,
+        quantity: barcodeForm.quantity,
+        barcode: barcodeForm.barcode // Store barcode in barcode field only
+      };
+      await axios.post(`${api}/products`, productData, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setShowBarcodeProductModal(false);
+      setBarcodeForm({
+        barcode: "",
+        name: "",
+        description: "",
+        retail_price: "",
+        sell_price: "",
+        quantity: 0,
+      });
+      setScannedBarcode("");
+      loadProducts();
+      alert('Product added with existing barcode successfully');
+    } catch (err) {
+      console.error(err);
+      alert(err.response?.data?.message || "Error adding product with barcode");
+    }
+  }
+
+  function handleBarcodeScan(e) {
+    const value = e.target.value;
+    setBarcodeBuffer(value);
+    
+    // Check if Enter key is pressed (complete barcode submission)
+    if (e.key === 'Enter') {
+      const completeBarcode = value.trim();
+      if (completeBarcode.length >= 8) { // Minimum barcode length
+        setScannedBarcode(completeBarcode);
+        setBarcodeForm(prev => ({ ...prev, barcode: completeBarcode }));
+        setBarcodeBuffer("");
+      }
+    }
+  }
+
   // ---------------- Receipts ----------------
   function openReceiptModal() {
     setReceiptForm({
       vendor_id: vendors.length ? vendors[0].id : "",
       invoice_no: "",
       items: [],
+      amount_paid: 0,
+      payment_notes: "",
     });
     setShowReceiptModal(true);
   }
@@ -263,6 +343,8 @@ const Products = () => {
       const payload = {
         vendor_id: receiptForm.vendor_id,
         invoice_no: receiptForm.invoice_no || null,
+        amount_paid: parseFloat(receiptForm.amount_paid || 0),
+        payment_notes: receiptForm.payment_notes || null,
         items: receiptForm.items.map((it) => {
           const prod = products.find((p) => p.id === parseInt(it.product_id));
           return {
@@ -326,6 +408,11 @@ Receipt #${receipt.id}
 
 Vendor: ${receipt.vendor_name}
 Invoice: ${receipt.invoice_no || "-"}
+Payment Status: ${receipt.payment_status || "Unknown"}
+Amount Paid: Rs.${receipt.amount_paid || 0}
+Amount Remaining: Rs.${receipt.amount_remaining || 0}
+${receipt.payment_notes ? `Payment Notes: ${receipt.payment_notes}` : ""}
+
 Items:
 ${itemsText}
 
@@ -342,6 +429,37 @@ Date: ${new Date(receipt.created_at).toLocaleString()}
     } catch (err) {
       console.error(err);
       alert("Failed to download receipt");
+    }
+  }
+
+  // Payment editing functions
+  function openPaymentModal(receipt) {
+    setEditingReceipt(receipt);
+    setPaymentForm({
+      amount_paid: receipt.amount_paid || 0,
+      payment_notes: receipt.payment_notes || "",
+    });
+    setShowPaymentModal(true);
+  }
+
+  async function updatePayment(e) {
+    e.preventDefault();
+    if (!editingReceipt) return;
+
+    try {
+      const token = localStorage.getItem('token');
+      const res = await axios.put(`${api}/receipts/${editingReceipt.id}/payment`, paymentForm, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      
+      setShowPaymentModal(false);
+      setEditingReceipt(null);
+      setPaymentForm({ amount_paid: 0, payment_notes: "" });
+      loadReceipts();
+      alert("Payment updated successfully");
+    } catch (err) {
+      console.error(err);
+      alert(err.response?.data?.message || "Error updating payment");
     }
   }
 
@@ -385,15 +503,21 @@ Date: ${new Date(receipt.created_at).toLocaleString()}
             padding: 2mm; 
             box-sizing: border-box;
           }
+          .shop-name { 
+            font-size: 8px; 
+            font-weight: 700; 
+            text-align: center; 
+            margin-bottom: 1px;
+          }
           .name { 
-            font-size: 10px; 
+            font-size: 8px; 
             font-weight: 700; 
             text-align: center; 
             max-width: 100%; 
             white-space: nowrap; 
             overflow: hidden; 
             text-overflow: ellipsis; 
-            margin-bottom: 2px;
+            margin-bottom: 1px;
           }
           .id { 
             font-size: 9px; 
@@ -438,8 +562,8 @@ Date: ${new Date(receipt.created_at).toLocaleString()}
       </head>
       <body>
         <div class="label">
-          <div class="name">${name.replace(/</g, '&lt;')}</div>
-          <div class="id">ID: ${id}</div>
+          <div class="shop-name">Al Madina Shopping Centre</div>
+          <div class="name">${name.replace(/</g, '&lt;')} | ID: ${id}</div>
           <div class="barcode-container">
             <svg id="barcode"></svg>
           </div>
@@ -504,6 +628,29 @@ Date: ${new Date(receipt.created_at).toLocaleString()}
       if (!searchId) return true;
       return String(p.id).includes(searchId.trim());
     });
+  
+  // Pagination logic
+  const totalPages = Math.ceil(filteredProducts.length / itemsPerPage);
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const endIndex = startIndex + itemsPerPage;
+  const paginatedProducts = filteredProducts.slice(startIndex, endIndex);
+  
+  // Reset to page 1 when search changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchProd, searchId]);
+  
+  // Pagination controls
+  const goToPage = (page) => {
+    if (page >= 1 && page <= totalPages) {
+      setCurrentPage(page);
+    }
+  };
+  
+  const changeItemsPerPage = (newItemsPerPage) => {
+    setItemsPerPage(newItemsPerPage);
+    setCurrentPage(1); // Reset to first page
+  };
 
   // Render barcode when modal opens or barcode product changes
   useEffect(() => {
@@ -619,7 +766,13 @@ Date: ${new Date(receipt.created_at).toLocaleString()}
               onClick={() => setShowProductModal(true)}
               className="bg-primary text-secondary px-4 py-2 rounded-lg shadow hover:opacity-90 transition"
             >
-              + Product
+              + Product (New Barcode)
+            </button>
+            <button
+              onClick={() => setShowBarcodeProductModal(true)}
+              className="bg-secondary text-primary px-4 py-2 rounded-lg shadow hover:opacity-90 transition"
+            >
+              + Product (Existing Barcode)
             </button>
             <button
               onClick={() => setShowVendorModal(true)}
@@ -656,7 +809,7 @@ Date: ${new Date(receipt.created_at).toLocaleString()}
         {/* Tab content */}
         {tab === "products" && (
           <>
-            <div className="mb-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="mb-4 grid grid-cols-1 md:grid-cols-4 gap-3">
               <input
                 placeholder="Search products..."
                 className="border p-2 rounded-lg flex-1"
@@ -669,6 +822,19 @@ Date: ${new Date(receipt.created_at).toLocaleString()}
                 value={searchId}
                 onChange={(e) => setSearchId(e.target.value)}
               />
+              <select
+                className="border p-2 rounded-lg"
+                value={itemsPerPage}
+                onChange={(e) => changeItemsPerPage(Number(e.target.value))}
+              >
+                <option value={25}>25 per page</option>
+                <option value={50}>50 per page</option>
+                <option value={100}>100 per page</option>
+                <option value={200}>200 per page</option>
+              </select>
+              <div className="text-sm p-2 rounded-lg bg-gray-100">
+                Showing {paginatedProducts.length} of {filteredProducts.length} products
+              </div>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full border-collapse">
@@ -684,7 +850,7 @@ Date: ${new Date(receipt.created_at).toLocaleString()}
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredProducts.map((p) => (
+                  {paginatedProducts.map((p) => (
                     <tr key={p.id} className="border-b hover:bg-gray-50">
                       <td className="p-3">{p.id}</td>
                       <td className="p-3 font-medium">
@@ -744,6 +910,76 @@ Date: ${new Date(receipt.created_at).toLocaleString()}
                 </tbody>
               </table>
             </div>
+            
+            {/* Pagination Controls */}
+            {totalPages > 1 && (
+              <div className="mt-4 flex items-center justify-between">
+                <div className="text-sm text-gray-600">
+                  Page {currentPage} of {totalPages} ({filteredProducts.length} total products)
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => goToPage(1)}
+                    disabled={currentPage === 1}
+                    className="px-3 py-1 border rounded disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+                  >
+                    First
+                  </button>
+                  <button
+                    onClick={() => goToPage(currentPage - 1)}
+                    disabled={currentPage === 1}
+                    className="px-3 py-1 border rounded disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+                  >
+                    Previous
+                  </button>
+                  
+                  {/* Page Numbers */}
+                  <div className="flex gap-1">
+                    {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                      let pageNum;
+                      if (totalPages <= 5) {
+                        pageNum = i + 1;
+                      } else if (currentPage <= 3) {
+                        pageNum = i + 1;
+                      } else if (currentPage >= totalPages - 2) {
+                        pageNum = totalPages - 4 + i;
+                      } else {
+                        pageNum = currentPage - 2 + i;
+                      }
+                      
+                      return (
+                        <button
+                          key={pageNum}
+                          onClick={() => goToPage(pageNum)}
+                          className={`px-3 py-1 border rounded ${
+                            currentPage === pageNum
+                              ? 'bg-primary text-secondary'
+                              : 'hover:bg-gray-50'
+                          }`}
+                        >
+                          {pageNum}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  
+                  <button
+                    onClick={() => goToPage(currentPage + 1)}
+                    disabled={currentPage === totalPages}
+                    className="px-3 py-1 border rounded disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+                  >
+                    Next
+                  </button>
+                  <button
+                    onClick={() => goToPage(totalPages)}
+                    disabled={currentPage === totalPages}
+                    className="px-3 py-1 border rounded disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+                  >
+                    Last
+                  </button>
+                </div>
+              </div>
+            )}
           </>
         )}
 
@@ -792,12 +1028,25 @@ Date: ${new Date(receipt.created_at).toLocaleString()}
                   <th className="p-3">Invoice</th>
                   <th className="p-3">Items</th>
                   <th className="p-3">Total</th>
+                  <th className="p-3">Paid</th>
+                  <th className="p-3">Remaining</th>
+                  <th className="p-3">Status</th>
                   <th className="p-3">Date</th>
                   <th className="p-3">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {receipts.map((r) => (
+                {receipts.map((r) => {
+                  const getPaymentStatusClass = (status) => {
+                    switch(status) {
+                      case 'paid': return 'bg-green-100 text-green-700 px-2 py-1 rounded text-xs font-semibold';
+                      case 'partial': return 'bg-yellow-100 text-yellow-700 px-2 py-1 rounded text-xs font-semibold';
+                      case 'unpaid': return 'bg-red-100 text-red-700 px-2 py-1 rounded text-xs font-semibold';
+                      default: return 'bg-gray-100 text-gray-700 px-2 py-1 rounded text-xs font-semibold';
+                    }
+                  };
+                  
+                  return (
                   <tr key={r.id} className="border-b hover:bg-gray-50">
                     <td className="p-3">{r.id}</td>
                     <td className="p-3 font-medium">{r.vendor_name}</td>
@@ -807,35 +1056,157 @@ Date: ${new Date(receipt.created_at).toLocaleString()}
                       Rs. {Number(r.total_amount).toFixed(2)}
                     </td>
                     <td className="p-3">
+                      Rs. {Number(r.amount_paid || 0).toFixed(2)}
+                    </td>
+                    <td className="p-3">
+                      Rs. {Number(r.amount_remaining || 0).toFixed(2)}
+                    </td>
+                    <td className="p-3">
+                      <span className={getPaymentStatusClass(r.payment_status)}>
+                        {r.payment_status ? r.payment_status.charAt(0).toUpperCase() + r.payment_status.slice(1) : 'Unknown'}
+                      </span>
+                    </td>
+                    <td className="p-3">
                       {new Date(r.created_at).toLocaleString()}
                     </td>
-                    <td className="p-3 flex gap-2">
+                    <td className="p-3 flex gap-2 flex-wrap">
                       <button
                         onClick={() => viewReceipt(r)}
-                        className="px-3 py-1 bg-blue-500 text-white rounded hover:opacity-90"
+                        className="px-3 py-1 bg-blue-500 text-white rounded hover:opacity-90 text-sm"
                       >
                         View
                       </button>
                       <button
                         onClick={() => downloadReceipt(r)}
-                        className="px-3 py-1 bg-green-600 text-white rounded hover:opacity-90"
+                        className="px-3 py-1 bg-green-600 text-white rounded hover:opacity-90 text-sm"
                       >
                         Download
                       </button>
                       <button
+                        onClick={() => openPaymentModal(r)}
+                        className="px-3 py-1 bg-orange-600 text-white rounded hover:opacity-90 text-sm"
+                      >
+                        Edit Payment
+                      </button>
+                      <button
                         onClick={() => viewReceipt(r)}
-                        className="px-3 py-1 bg-gray-700 text-white rounded hover:opacity-90"
+                        className="px-3 py-1 bg-gray-700 text-white rounded hover:opacity-90 text-sm"
                       >
                         Print
                       </button>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
       </div>
+
+      {/* Barcode Product Modal */}
+      {showBarcodeProductModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50">
+          <form
+            onSubmit={addProductWithBarcode}
+            className="bg-white p-6 rounded-xl shadow w-full max-w-md relative"
+          >
+            <button
+              type="button"
+              onClick={() => setShowBarcodeProductModal(false)}
+              className="absolute top-3 right-3 text-gray-500 hover:text-red-500"
+            >
+              <FaTimes />
+            </button>
+            <h3 className="text-lg font-semibold mb-3">Add Product with Existing Barcode</h3>
+            
+            {/* Barcode Scanner Input */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Scan or Enter Barcode
+              </label>
+              <input
+                className="border p-2 rounded w-full mb-2"
+                placeholder="Scan barcode or enter manually"
+                value={barcodeBuffer}
+                onChange={handleBarcodeScan}
+                onKeyDown={handleBarcodeScan}
+                autoFocus
+              />
+              {scannedBarcode && (
+                <div className="text-green-600 text-sm font-semibold">
+                  ✓ Barcode captured: {scannedBarcode}
+                </div>
+              )}
+            </div>
+            
+            <input
+              className="border p-2 rounded w-full mb-2"
+              placeholder="Product Name"
+              value={barcodeForm.name}
+              onChange={(e) =>
+                setBarcodeForm({ ...barcodeForm, name: e.target.value })
+              }
+              required
+            />
+            <input
+              className="border p-2 rounded w-full mb-2"
+              placeholder="Description"
+              value={barcodeForm.description}
+              onChange={(e) =>
+                setBarcodeForm({ ...barcodeForm, description: e.target.value })
+              }
+            />
+            <input
+              className="border p-2 rounded w-full mb-2"
+              placeholder="Cost / Retail Price"
+              value={barcodeForm.retail_price}
+              onChange={(e) =>
+                setBarcodeForm({
+                  ...barcodeForm,
+                  retail_price: e.target.value,
+                })
+              }
+              required
+            />
+            <input
+              className="border p-2 rounded w-full mb-2"
+              placeholder="Sell Price"
+              value={barcodeForm.sell_price}
+              onChange={(e) =>
+                setBarcodeForm({ ...barcodeForm, sell_price: e.target.value })
+              }
+              required
+            />
+            <input
+              className="border p-2 rounded w-full mb-2"
+              placeholder="Quantity"
+              type="number"
+              value={barcodeForm.quantity}
+              onChange={(e) =>
+                setBarcodeForm({ ...barcodeForm, quantity: e.target.value })
+              }
+              required
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowBarcodeProductModal(false)}
+                className="px-4 py-2 border rounded"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-4 py-2 bg-primary text-secondary rounded"
+                disabled={!scannedBarcode}
+              >
+                Add Product
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {/* Edit Product Modal */}
       {showEditModal && (
@@ -1272,6 +1643,62 @@ Date: ${new Date(receipt.created_at).toLocaleString()}
               </div>
             </div>
 
+            {/* Payment Section */}
+            <div className="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
+              <div className="font-medium mb-3 text-blue-800">Payment Information</div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-1">Amount Paid</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    className="border p-2 rounded w-full"
+                    placeholder="0.00"
+                    value={receiptForm.amount_paid}
+                    onChange={(e) =>
+                      setReceiptForm({
+                        ...receiptForm,
+                        amount_paid: e.target.value,
+                      })
+                    }
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Payment Notes</label>
+                  <input
+                    className="border p-2 rounded w-full"
+                    placeholder="Payment details (optional)"
+                    value={receiptForm.payment_notes}
+                    onChange={(e) =>
+                      setReceiptForm({
+                        ...receiptForm,
+                        payment_notes: e.target.value,
+                      })
+                    }
+                  />
+                </div>
+              </div>
+              {receiptForm.items.length > 0 && (
+                <div className="mt-3 p-3 bg-white rounded border">
+                  <div className="text-sm text-gray-600">
+                    Total Amount: <span className="font-semibold">
+                      Rs. {receiptForm.items.reduce((sum, it) => 
+                        sum + (parseFloat(it.cost_price || 0) * parseInt(it.quantity || 0)), 0
+                      ).toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="text-sm text-gray-600">
+                    Amount Remaining: <span className="font-semibold text-orange-600">
+                      Rs. {(receiptForm.items.reduce((sum, it) => 
+                        sum + (parseFloat(it.cost_price || 0) * parseInt(it.quantity || 0)), 0
+                      ) - parseFloat(receiptForm.amount_paid || 0)).toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+
             <div className="flex justify-end gap-2">
               <button
                 type="button"
@@ -1449,6 +1876,99 @@ Date: ${new Date(receipt.created_at).toLocaleString()}
               <button onClick={submitRestock} className="px-4 py-2 bg-emerald-600 text-white rounded">Update Stock</button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Payment Edit Modal */}
+      {showPaymentModal && editingReceipt && (
+        <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50">
+          <form
+            onSubmit={updatePayment}
+            className="bg-white p-6 rounded-xl shadow w-full max-w-md relative"
+          >
+            <button
+              type="button"
+              onClick={() => setShowPaymentModal(false)}
+              className="absolute top-3 right-3 text-gray-500 hover:text-red-500"
+            >
+              <FaTimes />
+            </button>
+            <h3 className="text-lg font-semibold mb-4">Edit Payment - Receipt #{editingReceipt.id}</h3>
+            
+            <div className="mb-4 p-3 bg-gray-50 rounded border">
+              <div className="text-sm text-gray-600">
+                <div>Vendor: <span className="font-medium">{editingReceipt.vendor_name}</span></div>
+                <div>Total Amount: <span className="font-medium">Rs. {Number(editingReceipt.total_amount).toFixed(2)}</span></div>
+                <div>Current Status: <span className="font-medium">{editingReceipt.payment_status}</span></div>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">Amount Paid</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max={editingReceipt.total_amount}
+                  className="border p-2 rounded w-full"
+                  placeholder="0.00"
+                  value={paymentForm.amount_paid}
+                  onChange={(e) =>
+                    setPaymentForm({
+                      ...paymentForm,
+                      amount_paid: e.target.value,
+                    })
+                  }
+                  required
+                />
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium mb-1">Payment Notes</label>
+                <textarea
+                  className="border p-2 rounded w-full"
+                  rows="3"
+                  placeholder="Payment details (optional)"
+                  value={paymentForm.payment_notes}
+                  onChange={(e) =>
+                    setPaymentForm({
+                      ...paymentForm,
+                      payment_notes: e.target.value,
+                    })
+                  }
+                />
+              </div>
+
+              <div className="p-3 bg-blue-50 rounded border">
+                <div className="text-sm text-gray-600">
+                  <div>Amount Remaining: <span className="font-semibold text-orange-600">
+                    Rs. {(editingReceipt.total_amount - parseFloat(paymentForm.amount_paid || 0)).toFixed(2)}
+                  </span></div>
+                  <div>New Status: <span className="font-semibold">
+                    {parseFloat(paymentForm.amount_paid || 0) >= editingReceipt.total_amount ? 'Paid' :
+                     parseFloat(paymentForm.amount_paid || 0) > 0 ? 'Partial' : 'Unpaid'}
+                  </span></div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 mt-6">
+              <button
+                type="button"
+                onClick={() => setShowPaymentModal(false)}
+                className="px-4 py-2 border rounded"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-4 py-2 bg-primary text-secondary rounded hover:opacity-90"
+              >
+                Update Payment
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </div>

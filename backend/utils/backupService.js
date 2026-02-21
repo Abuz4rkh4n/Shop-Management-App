@@ -134,10 +134,10 @@ const restoreBackup = () => {
   });
 };
 
-// Schedule automatic backups (every 10 seconds for testing)
+// Schedule automatic backups (every 5 minutes for production)
 const scheduleBackups = () => {
-  // Run every 10 seconds
-  cron.schedule('*/10 * * * * *', async () => {
+  // Run every 5 minutes
+  cron.schedule('*/5 * * * *', async () => {
     try {
       console.log('Running scheduled backup...');
       await createBackup();
@@ -145,7 +145,7 @@ const scheduleBackups = () => {
       console.error('Scheduled backup failed:', error);
     }
   });
-  console.log('Scheduled backup job initialized (runs every hour)');
+  console.log('Scheduled backup job initialized (runs every 5 minutes)');
 };
 
 // Initialize the backup system

@@ -12,6 +12,10 @@ const Sales = ({ onSaleCompleted }) => {
   const [showCheckout, setShowCheckout] = useState(false);
   const [showCustomAdd, setShowCustomAdd] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState(null);
+  
+  // Pagination for products
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(20);
 
   const [quickQty, setQuickQty] = useState(1);
   const [quickPrice, setQuickPrice] = useState("");
@@ -38,9 +42,13 @@ const Sales = ({ onSaleCompleted }) => {
   // single worker per receipt
   const [selectedWorkerId, setSelectedWorkerId] = useState(null);
 
+  // Day management state
+  const [currentDay, setCurrentDay] = useState(null);
+
   // barcode scan
   const [scannerEnabled, setScannerEnabled] = useState(false);
   const [barcodeBuffer, setBarcodeBuffer] = useState("");
+  const [scannedProduct, setScannedProduct] = useState(null); // Store scanned product for Quick Add
   const hiddenInputRef = useRef(null);
   const scanTimeoutRef = useRef(null);
 
@@ -52,7 +60,21 @@ const Sales = ({ onSaleCompleted }) => {
     loadWorkers();
     loadSales();
     loadSalesReceipts();
+    checkCurrentDay();
   }, []);
+
+  // Check if day is open
+  async function checkCurrentDay() {
+    try {
+      const token = localStorage.getItem('token');
+      const res = await axios.get(`${api}/day-management/current`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setCurrentDay(res.data);
+    } catch (error) {
+      setCurrentDay(null);
+    }
+  }
 
   async function loadProducts() {
     try {
@@ -138,12 +160,14 @@ const Sales = ({ onSaleCompleted }) => {
   }
 
   function addToCartFromQuick() {
-    if (!selectedProduct || quickQty <= 0) {
+    const productToAdd = selectedProduct;
+    
+    if (!productToAdd || quickQty <= 0) {
       setPopup("⚠️ Enter valid quantity");
       return;
     }
     const existing = cart.find(
-      (c) => c.product_id === selectedProduct.id && c.sold_price === Number(quickPrice)
+      (c) => c.product_id === productToAdd.id && c.sold_price === Number(quickPrice)
     );
     if (existing) {
       setCart((prev) =>
@@ -155,8 +179,8 @@ const Sales = ({ onSaleCompleted }) => {
       setCart((prev) => [
         ...prev,
         {
-          product_id: selectedProduct.id,
-          product_name: selectedProduct.name,
+          product_id: productToAdd.id,
+          product_name: productToAdd.name,
           quantity: Number(quickQty),
           sold_price: Number(quickPrice),
         },
@@ -235,6 +259,10 @@ const Sales = ({ onSaleCompleted }) => {
       setPopup("⚠️ Customer name is required");
       return;
     }
+    if (!currentDay) {
+      setPopup("⚠️ Please open a day first before making sales");
+      return;
+    }
     const items = cart.map((c) => (
       c.is_custom
         ? { custom_name: c.product_name, custom_cost_price: c.custom_cost_price ?? 0, quantity: c.quantity, sold_price: c.sold_price }
@@ -283,83 +311,237 @@ const Sales = ({ onSaleCompleted }) => {
     }
   }
 
-  // barcode: listen to key events when enabled (auto-submit after short pause)
-  useEffect(() => {
-    if (!scannerEnabled) return;
-    const handler = (e) => {
-      const key = e.key;
-      if (/^[0-9]$/.test(key)) {
-        setBarcodeBuffer((prev) => {
-          const next = (prev + key).slice(0, 32);
-          if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
-          scanTimeoutRef.current = setTimeout(() => {
-            const code = next.trim();
-            setBarcodeBuffer("");
-            if (code) addProductByBarcode(code);
-          }, 150); // small delay matches typical scanner burst
-          return next;
-        });
-      } else if (key === 'Enter') {
-        const code = (barcodeBuffer || "").trim();
-        setBarcodeBuffer("");
-        if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
-        if (code) addProductByBarcode(code);
+  // Handle barcode scanning from input field
+  function handleBarcodeScan(e) {
+    const value = e.target.value;
+    setBarcodeBuffer(value);
+    
+    // Check if Enter key is pressed (complete barcode submission)
+    if (e.key === 'Enter') {
+      const completeBarcode = value.trim();
+      if (completeBarcode.length >= 8) { // Minimum barcode length
+        e.preventDefault(); // Prevent form submission
+        setBarcodeBuffer(""); // Clear input immediately
+        searchAndAddProductByBarcode(completeBarcode);
       }
-    };
-    window.addEventListener('keydown', handler);
-    return () => {
-      window.removeEventListener('keydown', handler);
-      if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
-    };
-  }, [scannerEnabled]);
+    }
+  }
 
-  async function addProductByBarcode(code) {
+  // Search for product by barcode and automatically add to cart
+  async function searchAndAddProductByBarcode(code) {
     try {
       const token = localStorage.getItem('token');
+      console.log('🔍 Searching for barcode:', code);
+      setPopup('🔍 Searching for product...');
+      
       const res = await axios.get(`${api}/products/${code}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       const p = res.data;
-      if (!p || p.quantity <= 0) {
-        setPopup("⚠️ Product not found or out of stock");
+      console.log('✅ Found product:', p);
+      
+      if (!p) {
+        setPopup("❌ Product not found");
         return;
       }
-      let added = false;
+      
+      if (p.quantity <= 0) {
+        setPopup("⚠️ Product out of stock");
+        return;
+      }
+      
+      // Automatically add to cart
+      const newItem = {
+        product_id: p.id,
+        product_name: p.name,
+        quantity: 1,
+        sold_price: Number(p.sell_price),
+      };
+      
       setCart((prev) => {
         const existing = prev.find((c) => c.product_id === p.id && c.sold_price === Number(p.sell_price));
+        
         if (existing) {
           const nextQty = existing.quantity + 1;
           if (nextQty > Number(p.quantity)) {
             setPopup("⚠️ Not enough stock to add more of this product");
             return prev;
           }
-          added = true;
-          return prev.map((c) => c === existing ? { ...c, quantity: nextQty } : c);
+          const updatedCart = prev.map((c) => c === existing ? { ...c, quantity: nextQty } : c);
+          setPopup(`✅ Added another ${p.name} to cart`);
+          return updatedCart;
         }
-        added = true;
-        return [
-          ...prev,
-          {
-            product_id: p.id,
-            product_name: p.name,
-            quantity: 1,
-            sold_price: Number(p.sell_price),
-          },
-        ];
+        
+        const newCart = [...prev, newItem];
+        setPopup(`✅ ${p.name} added to cart`);
+        return newCart;
       });
-      if (added) setPopup(`✅ Added: ${p.name}`);
-    } catch (e) {
-      const status = e?.response?.status;
-      const msg = e?.response?.data?.message || e?.message || 'Failed to fetch product';
-      setPopup(`❌ Fetch error${status ? ' (' + status + ')' : ''}: ${msg}`);
+      
+      // Flash the cart to draw attention
+      const cartElement = document.getElementById('cart-section');
+      if (cartElement) {
+        cartElement.classList.add('ring-2', 'ring-green-500', 'ring-opacity-75');
+        setTimeout(() => {
+          cartElement.classList.remove('ring-2', 'ring-green-500', 'ring-opacity-75');
+        }, 1000);
+      }
+      
+    } catch (err) {
+      console.error('❌ Error searching product:', err);
+      setPopup(`❌ Product not found: ${code}`);
+    }
+  }
+
+  // barcode: listen to key events when enabled (global scanner fallback)
+  useEffect(() => {
+    if (!scannerEnabled) return;
+    const handler = (e) => {
+      // Don't handle global barcode events if the input field is focused
+      if (document.activeElement?.tagName === 'INPUT' && document.activeElement?.type === 'text') {
+        return;
+      }
+      
+      const key = e.key;
+      if (/^[0-9]$/.test(key)) {
+        // Only build buffer, don't auto-submit
+        setBarcodeBuffer((prev) => {
+          const next = (prev + key).slice(0, 32); // Max 32 chars
+          return next;
+        });
+      } else if (key === 'Enter') {
+        // On Enter, search for product
+        const code = (barcodeBuffer || "").trim();
+        setBarcodeBuffer("");
+        if (code && code.length >= 8) {
+          searchAndAddProductByBarcode(code);
+        }
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => {
+      window.removeEventListener('keydown', handler);
+    };
+  }, [scannerEnabled, barcodeBuffer]);
+
+  // Search for product by code (barcode or ID)
+  async function searchProductByCode(code) {
+    try {
+      const token = localStorage.getItem('token');
+      console.log('🔍 Searching for barcode:', code); // Debug log
+      const res = await axios.get(`${api}/products/${code}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const p = res.data;
+      console.log('✅ Found product:', p); // Debug log
+      
+      if (!p || p.quantity <= 0) {
+        setPopup("⚠️ Product not found or out of stock");
+        return;
+      }
+      
+      // Show product found message instead of adding to cart
+      setPopup(`📦 Found: ${p.name} - Click "Quick Add" to add to cart`);
+      setScannedProduct(p); // Store scanned product for Quick Add button
+      
+    } catch (err) {
+      console.error('❌ Error searching product:', err);
+      setPopup(`❌ Error finding product: ${err.message}`);
+    }
+  }
+
+  async function addProductByBarcode(code) {
+    try {
+      const token = localStorage.getItem('token');
+      console.log('🔍 Searching for barcode:', code); // Debug log
+      const res = await axios.get(`${api}/products/${code}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const p = res.data;
+      console.log('✅ Found product:', p); // Debug log
+      
+      if (!p || p.quantity <= 0) {
+        setPopup("⚠️ Product not found or out of stock");
+        return;
+      }
+      
+      // Force cart update with timeout to ensure state change
+      const newItem = {
+        product_id: p.id,
+        product_name: p.name,
+        quantity: 1,
+        sold_price: Number(p.sell_price),
+      };
+      
+      console.log('🆕 Adding new item to cart:', newItem); // Debug log
+      
+      setCart((prev) => {
+        const existing = prev.find((c) => c.product_id === p.id && c.sold_price === Number(p.sell_price));
+        console.log('🔍 Existing item check:', existing); // Debug log
+        
+        if (existing) {
+          const nextQty = existing.quantity + 1;
+          if (nextQty > Number(p.quantity)) {
+            setPopup("⚠️ Not enough stock to add more of this product");
+            return prev;
+          }
+          console.log('📦 Updating existing item quantity to:', nextQty); // Debug log
+          const updatedCart = prev.map((c) => c === existing ? { ...c, quantity: nextQty } : c);
+          console.log('✅ Product automatically added to cart (existing item updated):', p.name);
+          return updatedCart;
+        }
+        
+        const newCart = [...prev, newItem];
+        console.log('✅ Product automatically added to cart (new item):', p.name); // Debug log
+        console.log('🛒 New cart state:', newCart); // Debug log
+        return newCart;
+      });
+      
+      // Force popup after state update
+      setTimeout(() => {
+        setPopup(`✅ Auto-added: ${p.name}`);
+      }, 100);
+      
+      // Flash the cart to draw attention
+      const cartElement = document.getElementById('cart-section');
+      if (cartElement) {
+        cartElement.classList.add('ring-2', 'ring-green-500', 'ring-opacity-75');
+        setTimeout(() => {
+          cartElement.classList.remove('ring-2', 'ring-green-500', 'ring-opacity-75');
+        }, 1000);
+      }
+    } catch (err) {
+      console.error('❌ Error adding product to cart:', err);
+      setPopup(`❌ Error adding product: ${err.message}`);
     }
   }
 
   const filteredProducts = products.filter((p) => {
     const matchesSearch = p.name.toLowerCase().includes(search.toLowerCase());
-    const matchesId = searchId ? p.id.toString().includes(searchId) : true;
+    // Search by both ID and barcode field for better barcode support
+    const matchesId = searchId ? (
+      p.id.toString().includes(searchId) || 
+      (p.barcode && p.barcode.toString().includes(searchId))
+    ) : true;
     return matchesSearch && matchesId;
   });
+  
+  // Pagination logic for products
+  const totalPages = Math.ceil(filteredProducts.length / itemsPerPage);
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const endIndex = startIndex + itemsPerPage;
+  const paginatedProducts = filteredProducts.slice(startIndex, endIndex);
+  
+  // Reset to page 1 when search changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [search, searchId]);
+  
+  // Pagination controls
+  const goToPage = (page) => {
+    if (page >= 1 && page <= totalPages) {
+      setCurrentPage(page);
+    }
+  };
 
   // receipts filters & pagination
   const [receiptsSearchWorker, setReceiptsSearchWorker] = useState("");
@@ -418,28 +600,28 @@ const Sales = ({ onSaleCompleted }) => {
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-3xl font-bold text-primary">Sales POS</h1>
           <div className="flex gap-3 items-center">
+            {/* Day Status Indicator */}
+            <div className="flex items-center gap-2">
+              {currentDay ? (
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
+                  <span className="text-green-600 font-semibold">
+                    Day Open: {new Date(currentDay.day_date).toLocaleDateString()}
+                  </span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 bg-red-500 rounded-full"></div>
+                  <span className="text-red-600 font-semibold">No Day Open</span>
+                </div>
+              )}
+            </div>
             <button
               onClick={() => setScannerEnabled((v) => !v)}
               className={`px-4 py-2 rounded-lg font-semibold border ${scannerEnabled ? 'bg-green-600 text-white' : 'bg-gray-100 text-gray-700'}`}
             >
               {scannerEnabled ? 'Scanner: On' : 'Scanner: Off'}
             </button>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                placeholder="Search by name..."
-                className="input input-bordered w-1/2"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-              <input
-                type="text"
-                placeholder="Search by ID..."
-                className="input input-bordered w-1/2"
-                value={searchId}
-                onChange={(e) => setSearchId(e.target.value)}
-              />
-            </div>
             <select
               value={selectedWorkerId ?? ''}
               onChange={(e) => setSelectedWorkerId(e.target.value)}
@@ -455,12 +637,6 @@ const Sales = ({ onSaleCompleted }) => {
               className="px-5 py-2 rounded-lg font-semibold border bg-white hover:bg-gray-50 transition"
             >
               + Custom Item
-            </button>
-            <button
-              onClick={() => setShowCheckout(true)}
-              className="bg-primary text-secondary px-5 py-2 rounded-lg font-semibold hover:bg-opacity-90 transition"
-            >
-              Checkout ({cart.length})
             </button>
           </div>
         </div>
@@ -480,86 +656,236 @@ const Sales = ({ onSaleCompleted }) => {
 
         <div className="grid md:grid-cols-3 gap-6">
           {/* Left: Product list */}
-          <div className="col-span-2 h-[300px] overflow-y-scroll">
-            <div className="grid gap-3">
-              {filteredProducts.map((p) => (
-                <div
-                  key={p.id}
-                  className="flex justify-between items-center border rounded-lg p-3 hover:shadow-md transition bg-gray-50"
-                >
-                  <div>
-                    <div className="font-semibold text-gray-800">{p.name} <span className="text-xs font-semibold">(ID: {p.id})</span></div>
-                    <div className="text-sm text-gray-600">
-                      Rs. {p.sell_price} • Stock: {p.quantity}
+          <div className="col-span-2">
+            {/* Search and Pagination Controls */}
+            <div className="mb-4 flex flex-wrap gap-3 items-center">
+              <div className="flex gap-2 flex-1">
+                <input
+                  type="text"
+                  placeholder="Search by name..."
+                  className="input input-bordered flex-1"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+                <input
+                  type="text"
+                  placeholder="Search by ID..."
+                  className="input input-bordered w-1/2"
+                  value={searchId}
+                  onChange={(e) => setSearchId(e.target.value)}
+                />
+              </div>
+              <select
+                value={itemsPerPage}
+                onChange={(e) => {
+                  setItemsPerPage(Number(e.target.value));
+                  setCurrentPage(1);
+                }}
+                className="border p-2 rounded-lg"
+              >
+                <option value={10}>10 per page</option>
+                <option value={20}>20 per page</option>
+                <option value={50}>50 per page</option>
+              </select>
+            </div>
+            
+            {/* Product List */}
+            <div className="h-[400px] overflow-y-scroll">
+              <div className="grid gap-3">
+                {paginatedProducts.map((p) => (
+                  <div
+                    key={p.id}
+                    className="flex justify-between items-center border rounded-lg p-3 hover:shadow-md transition bg-gray-50"
+                  >
+                    <div>
+                      <div className="font-semibold text-gray-800">{p.name} <span className="text-xs font-semibold">(ID: {p.id})</span></div>
+                      <div className="text-sm text-gray-600">
+                        Rs. {p.sell_price} • Stock: {p.quantity}
+                      </div>
+                      <div
+                        className={` font-semibold text-[14px] rounded-md text-center py-1 mt-2 ${
+                          p.quantity == 0
+                            ? " bg-red-300 text-red-700"
+                            : " bg-green-300 text-green-700"
+                        }`}
+                      >
+                        {p.quantity == 0 ? "Out of Stock" : "Available"}
+                      </div>
                     </div>
-                    <div
-                      className={` font-semibold text-[14px] rounded-md text-center py-1 mt-2 ${
-                        p.quantity == 0
-                          ? " bg-red-300 text-red-700"
-                          : " bg-green-300 text-green-700"
+                    <button
+                      onClick={() => openQuickAdd(p)}
+                      disabled={p.quantity <= 0}
+                      className={`px-4 py-2 rounded-lg font-medium ${
+                        p.quantity > 0
+                          ? "bg-primary text-secondary hover:bg-opacity-90"
+                          : "bg-gray-300 text-gray-600 cursor-not-allowed"
                       }`}
                     >
-                      {p.quantity == 0 ? "Out of Stock" : "Available"}
-                    </div>
+                      ➕ Quick Add
+                    </button>
                   </div>
+                ))}
+                {paginatedProducts.length === 0 && (
+                  <div className="p-4 text-center text-gray-500">
+                    {filteredProducts.length === 0 ? "No products found" : "No products on this page"}
+                  </div>
+                )}
+              </div>
+            </div>
+            
+            {/* Pagination Controls */}
+            {totalPages > 1 && (
+              <div className="mt-4 flex items-center justify-between">
+                <div className="text-sm text-gray-600">
+                  Showing {paginatedProducts.length} of {filteredProducts.length} products (Page {currentPage} of {totalPages})
+                </div>
+                <div className="flex items-center gap-2">
                   <button
-                    disabled={p.quantity <= 0}
-                    onClick={() => openQuickAdd(p)}
-                    className={`px-4 py-2 rounded-lg font-medium ${
-                      p.quantity > 0
-                        ? "bg-primary text-secondary hover:bg-opacity-90"
-                        : "bg-gray-300 text-gray-600 cursor-not-allowed"
-                    }`}
+                    onClick={() => goToPage(currentPage - 1)}
+                    disabled={currentPage === 1}
+                    className="px-3 py-1 border rounded disabled:opacity-50 hover:bg-gray-50"
                   >
-                    ➕ Quick Add
+                    Previous
+                  </button>
+                  
+                  {/* Page Numbers */}
+                  <div className="flex gap-1">
+                    {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                      let pageNum;
+                      if (totalPages <= 5) {
+                        pageNum = i + 1;
+                      } else if (currentPage <= 3) {
+                        pageNum = i + 1;
+                      } else if (currentPage >= totalPages - 2) {
+                        pageNum = totalPages - 4 + i;
+                      } else {
+                        pageNum = currentPage - 2 + i;
+                      }
+                      
+                      return (
+                        <button
+                          key={pageNum}
+                          onClick={() => goToPage(pageNum)}
+                          className={`px-3 py-1 border rounded ${
+                            currentPage === pageNum
+                              ? 'bg-primary text-secondary'
+                              : 'hover:bg-gray-50'
+                          }`}
+                        >
+                          {pageNum}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  
+                  <button
+                    onClick={() => goToPage(currentPage + 1)}
+                    disabled={currentPage === totalPages}
+                    className="px-3 py-1 border rounded disabled:opacity-50 hover:bg-gray-50"
+                  >
+                    Next
                   </button>
                 </div>
-              ))}
-              {filteredProducts.length === 0 && (
-                <div className="p-4 text-center text-gray-500">
-                  No products found
+              </div>
+            )}
+          </div>
+
+          {/* Right: Cart - Modernized */}
+          <div id="cart-section" className="col-span-1 border rounded-xl p-4 bg-gradient-to-br from-gray-50 to-gray-100 shadow-lg transition-all duration-300">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-bold text-lg text-primary flex items-center gap-2">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
+                </svg>
+                Cart
+                {cart.length > 0 && (
+                  <span className="bg-primary text-secondary text-xs px-2 py-1 rounded-full font-bold">
+                    {cart.reduce((sum, item) => sum + item.quantity, 0)}
+                  </span>
+                )}
+              </h3>
+              {scannerEnabled && (
+                <div className="flex items-center gap-2 text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full">
+                  <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                  Scanner Active
                 </div>
               )}
             </div>
-          </div>
-
-          {/* Right: Cart */}
-          <div className="col-span-1 border rounded-lg p-4 bg-gray-50">
-            <h3 className="font-semibold text-lg mb-3 text-primary">Cart</h3>
+            
+            {/* Barcode Scanner Input */}
             {scannerEnabled && (
-              <div className="mb-2 text-xs text-gray-600">Scanner active. Type or scan product ID. Buffer: {barcodeBuffer}</div>
+              <div className="mb-3">
+                <div className="flex items-center gap-2 text-xs bg-green-100 text-green-700 px-3 py-2 rounded-lg mb-2">
+                  <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                  Scanner Active - Scan barcode to add product
+                </div>
+                <input
+                  type="text"
+                  placeholder="📷 Scan barcode here..."
+                  className="w-full border-2 border-green-300 rounded-lg px-3 py-2 text-center font-mono text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                  value={barcodeBuffer}
+                  onChange={(e) => setBarcodeBuffer(e.target.value)}
+                  onKeyDown={handleBarcodeScan}
+                  autoFocus
+                />
+                {barcodeBuffer && (
+                  <div className="mt-1 text-xs text-gray-600 bg-blue-50 border border-blue-200 rounded-lg p-2 text-center">
+                    Scanning: <span className="font-mono font-bold text-blue-700">{barcodeBuffer}</span>
+                  </div>
+                )}
+              </div>
             )}
-            <div className="max-h-96 overflow-auto">
+            <div className="max-h-80 overflow-auto space-y-2">
               {cart.map((c, idx) => (
                 <div
                   key={idx}
-                  className="mb-3 border-b pb-2 bg-white p-2 rounded-lg shadow-sm"
+                  className="bg-white p-3 rounded-lg shadow-sm border border-gray-200 hover:shadow-md transition-all duration-200 hover:border-primary"
                 >
-                  <div className="flex justify-between items-center mb-2">
-                    <div className="font-medium text-gray-700">
+                  <div className="flex justify-between items-start mb-2">
+                    <div className="font-medium text-gray-800 text-sm flex-1">
                       {c.product_name}
                     </div>
-                    <div className="text-primary font-bold">
+                    <div className="text-primary font-bold text-sm">
                       Rs. {c.sold_price * c.quantity}
                     </div>
                   </div>
 
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 items-center">
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => {
+                          const newQty = Math.max(1, c.quantity - 1);
+                          updateCartRow(idx, "quantity", newQty);
+                        }}
+                        className="w-6 h-6 bg-gray-200 hover:bg-gray-300 rounded text-xs font-bold transition-colors"
+                      >
+                        -
+                      </button>
+                      <input
+                        type="number"
+                        className="w-12 border p-1 rounded text-center text-sm"
+                        value={c.quantity}
+                        onChange={(e) =>
+                          updateCartRow(
+                            idx,
+                            "quantity",
+                            Math.max(1, Number(e.target.value))
+                          )
+                        }
+                      />
+                      <button
+                        onClick={() => {
+                          const newQty = c.quantity + 1;
+                          updateCartRow(idx, "quantity", newQty);
+                        }}
+                        className="w-6 h-6 bg-gray-200 hover:bg-gray-300 rounded text-xs font-bold transition-colors"
+                      >
+                        +
+                      </button>
+                    </div>
                     <input
                       type="number"
-                      className="w-20 border p-1 rounded"
-                      value={c.quantity}
-                      onChange={(e) =>
-                        updateCartRow(
-                          idx,
-                          "quantity",
-                          Math.max(1, Number(e.target.value))
-                        )
-                      }
-                    />
-                    <input
-                      type="number"
-                      className="w-24 border p-1 rounded"
+                      className="w-20 border p-1 rounded text-sm"
                       value={c.sold_price}
                       onChange={(e) =>
                         updateCartRow(idx, "sold_price", Number(e.target.value))
@@ -567,27 +893,41 @@ const Sales = ({ onSaleCompleted }) => {
                     />
                     <button
                       onClick={() => removeCartRow(idx)}
-                      className="px-2 bg-red-500 text-white rounded"
+                      className="w-6 h-6 bg-red-500 hover:bg-red-600 text-white rounded text-xs transition-colors"
                     >
                       ✕
                     </button>
                   </div>
                 </div>
               ))}
+              {cart.length === 0 && (
+                <div className="text-center text-gray-400 py-8">
+                  <svg className="w-12 h-12 mx-auto mb-2 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
+                  </svg>
+                  <p className="text-sm">Cart is empty</p>
+                  <p className="text-xs mt-1">Scan or add items to get started</p>
+                </div>
+              )}
             </div>
 
-            {/* Total */}
-            <div className="mt-4">
-              <div className="flex justify-between text-lg font-semibold">
-                <span>Total</span>
-                <span className="text-primary">
-                  Rs.{" "}
-                  {cart
-                    .reduce((s, c) => s + c.quantity * c.sold_price, 0)
-                    .toFixed(2)}
-                </span>
+            {/* Total - Modernized */}
+            {cart.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-gray-200">
+                <div className="flex justify-between items-center">
+                  <span className="text-lg font-semibold text-gray-700">Total</span>
+                  <span className="text-xl font-bold text-primary">
+                    Rs. {cart.reduce((s, c) => s + c.quantity * c.sold_price, 0).toFixed(2)}
+                  </span>
+                </div>
+                <button
+                  onClick={() => setShowCheckout(true)}
+                  className="w-full mt-3 bg-primary text-secondary py-3 rounded-lg font-semibold hover:bg-opacity-90 transition-all duration-200 transform hover:scale-105 shadow-lg"
+                >
+                  Proceed to Checkout
+                </button>
               </div>
-            </div>
+            )}
           </div>
         </div>
 
@@ -928,34 +1268,69 @@ const Sales = ({ onSaleCompleted }) => {
       {/* Receipt View / Print Modal */}
       {showReceiptView && activeReceipt && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50">
-          <div className="bg-white p-4 rounded-lg shadow-lg w-full max-w-sm">
-            <div className="flex justify-between items-center mb-2">
-              <h4 className="font-semibold">Al Madina Center Churi Gali</h4>
-              <h4 className="font-semibold">Receipt #{activeReceipt.id}</h4>
-              <button onClick={() => setShowReceiptView(false)} className="text-red-600">✕</button>
+          <div className="bg-white p-6 rounded-lg shadow-lg w-full max-w-sm">
+            <div className="flex justify-between items-center mb-4">
+              <h4 className="font-bold text-lg text-primary">Sales Receipt #{activeReceipt.id}</h4>
+              <button onClick={() => setShowReceiptView(false)} className="text-red-600 hover:text-red-800 text-xl font-bold">✕</button>
             </div>
-            <div className="text-sm">
-              <div>Worker: <b>{activeReceipt.worker_name}</b></div>
-              <div>Customer: <b>{activeReceipt.customer_name || 'N/A'}</b></div>
-              <div>Date: {new Date(activeReceipt.created_at).toLocaleString()}</div>
-              <div className="my-2 border-t" />
-              <div className="max-h-72 overflow-auto">
+            
+            {/* Shop Header */}
+            <div className="text-center mb-4 border-b pb-3">
+              <h3 className="font-bold text-lg text-primary">Al Madina Shopping Centre</h3>
+              <p className="text-sm text-gray-600">Churi Gali</p>
+              <p className="text-sm font-semibold">Owner: Haji Murtaza</p>
+              <p className="text-sm">Phone: [Your Phone Number]</p>
+            </div>
+            
+            <div className="text-sm space-y-1">
+              <div className="flex justify-between">
+                <span>Worker:</span>
+                <span className="font-semibold">{activeReceipt.worker_name}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Customer:</span>
+                <span className="font-semibold">{activeReceipt.customer_name || 'N/A'}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Date:</span>
+                <span className="font-semibold">{new Date(activeReceipt.created_at).toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Status:</span>
+                <span className={`px-2 py-1 rounded text-xs ${receiptStatusClasses(activeReceipt.payment_status)}`}>
+                  {activeReceipt.payment_status}
+                </span>
+              </div>
+              <div className="border-t pt-2 mt-2"></div>
+              <div className="max-h-64 overflow-auto">
                 {activeReceipt.items?.map((it, i) => (
-                  <div key={i} className="flex justify-between text-sm py-0.5">
-                    <div className="pr-2 flex-1">{it.product_name} × {it.quantity}</div>
-                    <div>Rs. {(Number(it.sold_price) * Number(it.quantity)).toFixed(2)}</div>
+                  <div key={i} className="flex justify-between text-sm py-1 border-b border-gray-100">
+                    <div className="flex-1">
+                      <div className="font-medium">{it.product_name}</div>
+                      <div className="text-xs text-gray-500">Rs. {it.sold_price} × {it.quantity}</div>
+                    </div>
+                    <div className="font-semibold text-right">
+                      Rs. {(Number(it.sold_price) * Number(it.quantity)).toFixed(2)}
+                    </div>
                   </div>
                 ))}
               </div>
-              <div className="my-2 border-t" />
-              <div className="flex justify-between font-semibold">
-                <span>Total</span>
-                <span>Rs. {Number(activeReceipt.total_amount).toFixed(2)}</span>
+              <div className="border-t pt-2 mt-2"></div>
+              <div className="flex justify-between font-bold text-lg">
+                <span>Total:</span>
+                <span className="text-primary">Rs. {Number(activeReceipt.total_amount).toFixed(2)}</span>
               </div>
             </div>
-            <div className="flex justify-end gap-2 mt-3">
-              <button className="px-3 py-1 border rounded" onClick={() => setShowReceiptView(false)}>Close</button>
-              <button className="px-3 py-1 bg-primary text-secondary rounded" onClick={() => printThermalReceipt(activeReceipt)}>Print</button>
+            
+            {/* Footer */}
+            <div className="text-center mt-4 pt-3 border-t text-xs text-gray-500">
+              <p>Thank you for your purchase!</p>
+              <p className="mt-1">Al Madina Shopping Centre</p>
+            </div>
+            
+            <div className="flex justify-end gap-2 mt-4">
+              <button className="px-4 py-2 border rounded hover:bg-gray-50" onClick={() => setShowReceiptView(false)}>Close</button>
+              <button className="px-4 py-2 bg-primary text-secondary rounded hover:bg-opacity-90" onClick={() => printThermalReceipt(activeReceipt)}>Print Receipt</button>
             </div>
           </div>
         </div>
@@ -973,33 +1348,44 @@ function printThermalReceipt(receipt) {
   <meta charset="utf-8" />
   <style>
     @page { size: ${widthMm}mm auto; margin: 0; }
-    body { margin: 0; font-family: Arial, sans-serif; }
-    .ticket { width: ${widthMm}mm; padding: 6mm 4mm; box-sizing: border-box; }
+    body { margin: 0; font-family: 'Courier New', monospace; }
+    .ticket { width: ${widthMm}mm; padding: 8mm 5mm; box-sizing: border-box; }
     .center { text-align: center; }
-    .row { display: flex; justify-content: space-between; font-size: 12px; }
-    .title { font-weight: 600; font-size: 16px; margin-bottom: 6px; text-align: center; }
-    .muted { color: #555; font-size: 11px; }
-    .line { border-top: 1px dashed #333; margin: 6px 0; }
-    .item { display: flex; justify-content: space-between; font-size: 12px; margin: 2px 0; }
+    .row { display: flex; justify-content: space-between; font-size: 11px; margin: 2px 0; }
+    .title { font-weight: bold; font-size: 14px; margin-bottom: 4px; text-align: center; }
+    .subtitle { font-size: 10px; text-align: center; margin-bottom: 6px; }
+    .muted { color: #555; font-size: 9px; }
+    .line { border-top: 1px dashed #333; margin: 4px 0; }
+    .item { display: flex; justify-content: space-between; font-size: 10px; margin: 1px 0; }
+    .total { font-weight: bold; font-size: 12px; }
+    .footer { text-align: center; font-size: 8px; margin-top: 6px; }
   </style>
 </head>
 <body>
   <div class="ticket">
-  <div class="title">Al Madina Center Churi Gali</div>
-    <div class="center">Sales Receipt #${receipt.id}</div>
+    <div class="title">AL MADINA SHOPPING CENTRE</div>
+    <div class="subtitle">CHURI GALI</div>
+    <div class="subtitle">Owner: Haji Murtaza</div>
+    <div class="subtitle">Phone: [Your Phone Number]</div>
+    <div class="line"></div>
+    <div class="center">SALES RECEIPT #${receipt.id}</div>
     <div class="center muted">${new Date(receipt.created_at).toLocaleString()}</div>
     <div class="line"></div>
-    <div class="row"><div>Worker</div><div><b>${receipt.worker_name || ''}</b></div></div>
-    <div class="row"><div>Customer</div><div><b>${receipt.customer_name || 'N/A'}</b></div></div>
+    <div class="row"><div>Worker:</div><div>${receipt.worker_name || ''}</div></div>
+    <div class="row"><div>Customer:</div><div>${receipt.customer_name || 'N/A'}</div></div>
+    <div class="row"><div>Status:</div><div>${receipt.payment_status}</div></div>
     <div class="line"></div>
     ${(receipt.items || []).map(it => {
       const total = (Number(it.quantity) * Number(it.sold_price)).toFixed(2);
-      return `<div class="item"><div>${it.product_name} × ${it.quantity}</div><div>Rs. ${total}</div></div>`;
+      const name = it.product_name.length > 20 ? it.product_name.substring(0, 20) + '...' : it.product_name;
+      return `<div class="item"><div>${name} ×${it.quantity}</div><div>Rs.${total}</div></div>`;
     }).join('')}
     <div class="line"></div>
-    <div class="row" style="font-weight:700"><div>Total</div><div>Rs. ${Number(receipt.total_amount).toFixed(2)}</div></div>
-    <div class="center muted" style="margin-top:8px;">Thanks for your purchase!</div>
-    <div class="center muted" style="margin-top:8px;">Developed by: Abuzar (03108112857)</div>
+    <div class="row total"><div>TOTAL:</div><div>Rs.${Number(receipt.total_amount).toFixed(2)}</div></div>
+    <div class="line"></div>
+    <div class="footer">Thank you for shopping with us!</div>
+    <div class="footer">Al Madina Shopping Centre</div>
+    <div class="footer">Churi Gali</div>
   </div>
   <script>
     window.addEventListener('load', () => setTimeout(() => window.print(), 100));
