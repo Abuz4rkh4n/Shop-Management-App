@@ -36,6 +36,7 @@ const Products = () => {
 
   // receipts
   const [receipts, setReceipts] = useState([]);
+  const [searchReceiptVendor, setSearchReceiptVendor] = useState("");
   const [showReceiptModal, setShowReceiptModal] = useState(false);
   const [receiptForm, setReceiptForm] = useState({
     vendor_id: "",
@@ -260,6 +261,8 @@ const Products = () => {
       if (completeBarcode.length >= 8) { // Minimum barcode length
         setScannedBarcode(completeBarcode);
         setBarcodeForm(prev => ({ ...prev, barcode: completeBarcode }));
+        // Also populate the search field for barcode search
+        setSearchId(completeBarcode);
         setBarcodeBuffer("");
       }
     }
@@ -626,7 +629,10 @@ Date: ${new Date(receipt.created_at).toLocaleString()}
     .filter((p) => p.name.toLowerCase().includes(searchProd.toLowerCase()))
     .filter((p) => {
       if (!searchId) return true;
-      return String(p.id).includes(searchId.trim());
+      // Search by ID, barcode field, or name (for barcode scanning)
+      return String(p.id).includes(searchId.trim()) || 
+             (p.barcode && p.barcode.toString().includes(searchId.trim())) ||
+             p.name.toLowerCase().includes(searchId.toLowerCase());
     });
   
   // Pagination logic
@@ -1019,7 +1025,18 @@ Date: ${new Date(receipt.created_at).toLocaleString()}
 
         {/* Receipts Table */}
         {tab === "receipts" && (
-          <div className="overflow-x-auto">
+          <div>
+            {/* Vendor Search */}
+            <div className="mb-4">
+              <input
+                type="text"
+                placeholder="Search by vendor name..."
+                className="w-full max-w-md border p-2 rounded-lg"
+                value={searchReceiptVendor}
+                onChange={(e) => setSearchReceiptVendor(e.target.value)}
+              />
+            </div>
+            <div className="overflow-x-auto">
             <table className="w-full border-collapse">
               <thead>
                 <tr className="bg-primary text-secondary text-left">
@@ -1036,7 +1053,12 @@ Date: ${new Date(receipt.created_at).toLocaleString()}
                 </tr>
               </thead>
               <tbody>
-                {receipts.map((r) => {
+                {receipts
+                  .filter((r) => 
+                    r.vendor_name && 
+                    r.vendor_name.toLowerCase().includes(searchReceiptVendor.toLowerCase())
+                  )
+                  .map((r) => {
                   const getPaymentStatusClass = (status) => {
                     switch(status) {
                       case 'paid': return 'bg-green-100 text-green-700 px-2 py-1 rounded text-xs font-semibold';
@@ -1100,6 +1122,7 @@ Date: ${new Date(receipt.created_at).toLocaleString()}
                 })}
               </tbody>
             </table>
+            </div>
           </div>
         )}
       </div>

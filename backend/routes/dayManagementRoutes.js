@@ -40,7 +40,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// Get current day (today's record if it exists and is open)
+// Get current day (most recent open day)
 router.get('/current', async (req, res) => {
   try {
     const sql = `
@@ -50,7 +50,9 @@ router.get('/current', async (req, res) => {
       FROM day_management dm
       LEFT JOIN admin_users u1 ON dm.opening_user_id = u1.id
       LEFT JOIN admin_users u2 ON dm.closing_user_id = u2.id
-      WHERE dm.day_date = CURDATE() AND dm.status = 'open'
+      WHERE dm.status = 'open'
+      ORDER BY dm.day_date DESC
+      LIMIT 1
     `;
     
     db.query(sql, (err, results) => {
@@ -72,8 +74,8 @@ router.post('/start', async (req, res) => {
     const { opening_cash = 0, notes = '' } = req.body;
     const user_id = req.user?.id; // From auth middleware
     
-    // Check if today's day already exists
-    const checkSql = 'SELECT id FROM day_management WHERE day_date = CURDATE()';
+    // Check if there's already an open day
+    const checkSql = 'SELECT id FROM day_management WHERE status = "open"';
     db.query(checkSql, (err, results) => {
       if (err) {
         console.error('Error checking existing day:', err);
@@ -81,7 +83,7 @@ router.post('/start', async (req, res) => {
       }
       
       if (results.length > 0) {
-        return res.status(400).json({ message: 'Day already started for today' });
+        return res.status(400).json({ message: 'There is already an open day. Please close it first.' });
       }
       
       // Create new day record
@@ -116,13 +118,26 @@ router.post('/close/:id', async (req, res) => {
     const { closing_cash = 0, notes = '' } = req.body;
     const user_id = req.user?.id; // From auth middleware
     
-    // Get day sales data
+    // Get day sales data including returns
     const salesSql = `
       SELECT 
         COUNT(DISTINCT sr.id) as total_receipts,
-        SUM(sr.total_amount) as total_sales,
+        SUM(CASE 
+          WHEN sr.payment_status = 'refunded' THEN 0
+          ELSE sr.total_amount 
+        END) as total_sales,
         COUNT(DISTINCT sr.customer_name) as total_customers,
-        SUM(sri.quantity) as total_products_sold
+        SUM(CASE
+          WHEN sr.payment_status = 'refunded' THEN 0
+          ELSE sri.quantity
+        END) as total_products_sold,
+        COALESCE((
+          SELECT SUM(r.returned_amount)
+          FROM returns r
+          WHERE DATE(r.created_at) = (
+            SELECT day_date FROM day_management WHERE id = ?
+          )
+        ), 0) as total_returns
       FROM sales_receipts sr
       LEFT JOIN sales_receipt_items sri ON sr.id = sri.receipt_id
       WHERE DATE(sr.created_at) = (
@@ -140,7 +155,8 @@ router.post('/close/:id', async (req, res) => {
         total_receipts: 0,
         total_sales: 0,
         total_customers: 0,
-        total_products_sold: 0
+        total_products_sold: 0,
+        total_returns: 0
       };
       
       // Get top selling products for the day
@@ -155,6 +171,7 @@ router.post('/close/:id', async (req, res) => {
         WHERE DATE(sr.created_at) = (
           SELECT day_date FROM day_management WHERE id = ?
         )
+        AND sr.payment_status != 'refunded'
         GROUP BY p.id, p.name
         ORDER BY total_sold DESC
         LIMIT 10
@@ -171,7 +188,10 @@ router.post('/close/:id', async (req, res) => {
           SELECT 
             w.name as worker_name,
             COUNT(DISTINCT sr.id) as receipts_count,
-            SUM(sr.total_amount) as total_sales
+            SUM(CASE 
+              WHEN sr.payment_status = 'refunded' THEN 0
+              ELSE sr.total_amount 
+            END) as total_sales
           FROM sales_receipts sr
           JOIN workers w ON sr.worker_id = w.id
           WHERE DATE(sr.created_at) = (
@@ -220,16 +240,19 @@ router.post('/close/:id', async (req, res) => {
             // Create day summary record
             const summarySql = `
               INSERT INTO day_summary 
-              (day_management_id, total_products_sold, total_customers, total_sales, 
+              (day_management_id, total_products_sold, total_customers, 
+               cash_sales, credit_sales, pending_sales,
                top_selling_products, worker_performance)
-              VALUES (?, ?, ?, ?, ?, ?)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             `;
             
             db.query(summarySql, [
               id,
               salesData.total_products_sold,
               salesData.total_customers,
-              salesData.total_sales,
+              salesData.total_sales, // cash_sales
+              0, // credit_sales
+              0, // pending_sales
               JSON.stringify(topProducts),
               JSON.stringify(workerPerformance)
             ], (err, summaryResult) => {

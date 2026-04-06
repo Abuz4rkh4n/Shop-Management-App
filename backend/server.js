@@ -451,7 +451,7 @@ app.delete("/sales/receipts/:id", (req, res) => {
 app.put("/sales/receipts/:id/status", (req, res) => {
   const { id } = req.params;
   const { payment_status } = req.body;
-  const allowed = ["paid", "pending", "all product got removed"]; // allowed statuses
+  const allowed = ["paid", "pending", "hold", "all product got removed"]; // allowed statuses
   if (!allowed.includes(payment_status)) {
     return res.status(400).json({ message: "Invalid payment status" });
   }
@@ -502,6 +502,25 @@ app.post("/sales/receipts/:id/return", (req, res) => {
       if (qty > it.quantity) {
         throw { status: 400, message: "Return quantity exceeds item quantity" };
       }
+
+      // Log the return with a default worker_id to satisfy database constraints
+      const returnData = {
+        sale_id: id,
+        product_id: it.product_id,
+        worker_id: 1, // Default worker ID to satisfy database constraints
+        quantity: qty,
+        reason: reason || "",
+        returned_amount: qty * (it.sold_price || 0)
+      };
+      
+      // Insert return record
+      await new Promise((resolve, reject) => {
+        db.query(
+          "INSERT INTO returns (sale_id, product_id, worker_id, quantity, reason, returned_amount, created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())",
+          [returnData.sale_id, returnData.product_id, returnData.worker_id, returnData.quantity, returnData.reason, returnData.returned_amount],
+          (err, result) => (err ? reject(err) : resolve(result))
+        );
+      });
 
       // Update or delete the item row
       if (qty === it.quantity) {
@@ -1597,6 +1616,34 @@ app.get("/returns", (req, res) => {
   db.query(sql, (err, rows) => {
     if (err) {
       console.error("Error fetching returns:", err);
+      return res.status(500).json({ message: "DB error" });
+    }
+    res.json(rows);
+  });
+});
+
+// Get return history from sales receipts (new system)
+app.get("/sales/returns-history", (req, res) => {
+  const sql = `
+    SELECT 
+      r.id,
+      r.sale_id as receipt_id,
+      r.product_id,
+      p.name as product_name,
+      w.name as worker_name,
+      r.quantity as returned_quantity,
+      r.reason,
+      r.returned_amount,
+      r.created_at as return_date
+    FROM returns r
+    LEFT JOIN products p ON p.id = r.product_id
+    LEFT JOIN workers w ON w.id = r.worker_id
+    ORDER BY r.created_at DESC
+  `;
+
+  db.query(sql, (err, rows) => {
+    if (err) {
+      console.error("Error fetching return history:", err);
       return res.status(500).json({ message: "DB error" });
     }
     res.json(rows);

@@ -30,7 +30,7 @@ const Returns = ({ onReturnProcessed }) => {
   async function loadReturns() {
     try {
       const token = localStorage.getItem('token');
-      const res = await axios.get(`${api}/returns`, {
+      const res = await axios.get(`${api}/sales/returns-history`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setReturns(res.data || []);

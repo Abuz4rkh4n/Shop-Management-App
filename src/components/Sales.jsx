@@ -91,6 +91,8 @@ const Sales = ({ onSaleCompleted }) => {
   function receiptStatusClasses(status) {
     if (status === 'paid') return 'bg-green-100 text-green-700 border border-green-200';
     if (status === 'pending') return 'bg-yellow-100 text-yellow-700 border border-yellow-200';
+    if (status === 'hold') return 'bg-orange-100 text-orange-700 border border-orange-200';
+    if (status === 'refunded') return 'bg-gray-100 text-gray-600 border border-gray-300';
     if (status === 'all product got removed') return 'bg-red-100 text-red-700 border border-red-200';
     return 'bg-gray-100 text-gray-700 border border-gray-200';
   }
@@ -358,6 +360,8 @@ const Sales = ({ onSaleCompleted }) => {
         sold_price: Number(p.sell_price),
       };
       
+      console.log('🆕 Adding item to cart:', newItem);
+      
       setCart((prev) => {
         const existing = prev.find((c) => c.product_id === p.id && c.sold_price === Number(p.sell_price));
         
@@ -388,7 +392,13 @@ const Sales = ({ onSaleCompleted }) => {
       
     } catch (err) {
       console.error('❌ Error searching product:', err);
-      setPopup(`❌ Product not found: ${code}`);
+      if (err.response?.status === 404) {
+        setPopup(`❌ Product not found: ${code}`);
+      } else if (err.response?.status === 401) {
+        setPopup(`❌ Authentication error. Please log in again.`);
+      } else {
+        setPopup(`❌ Error searching product: ${code}`);
+      }
     }
   }
 
@@ -997,15 +1007,22 @@ const Sales = ({ onSaleCompleted }) => {
                     </td>
                     <td className="p-2">{new Date(r.created_at).toLocaleString()}</td>
                     <td className="p-2">
-                      <select
-                        className="px-2 py-1 border rounded mr-2 text-sm"
-                        value={r.payment_status}
-                        onChange={(e) => updateReceiptStatus(r.id, e.target.value)}
-                      >
-                        <option value="paid">paid</option>
-                        <option value="pending">pending</option>
-                        <option value="all product got removed">all product got removed</option>
-                      </select>
+                      {r.payment_status === 'refunded' ? (
+                        <span className="px-2 py-1 border rounded mr-2 text-sm bg-gray-100 text-gray-500 cursor-not-allowed">
+                          refunded (locked)
+                        </span>
+                      ) : (
+                        <select
+                          className="px-2 py-1 border rounded mr-2 text-sm"
+                          value={r.payment_status}
+                          onChange={(e) => updateReceiptStatus(r.id, e.target.value)}
+                        >
+                          <option value="paid">paid</option>
+                          <option value="pending">pending</option>
+                          <option value="hold">hold</option>
+                          <option value="all product got removed">all product got removed</option>
+                        </select>
+                      )}
                       <button
                         className="px-3 py-1 bg-blue-600 text-white rounded mr-2"
                         onClick={async () => {
@@ -1204,6 +1221,7 @@ const Sales = ({ onSaleCompleted }) => {
                 >
                   <option value="paid">Paid Now</option>
                   <option value="pending">Pay Later</option>
+                  <option value="hold">Hold</option>
                 </select>
               </div>
 
@@ -1279,7 +1297,7 @@ const Sales = ({ onSaleCompleted }) => {
               <h3 className="font-bold text-lg text-primary">Al Madina Shopping Centre</h3>
               <p className="text-sm text-gray-600">Churi Gali</p>
               <p className="text-sm font-semibold">Owner: Haji Murtaza</p>
-              <p className="text-sm">Phone: [Your Phone Number]</p>
+              <p className="text-sm">Phone: 0332 7840742</p>
             </div>
             
             <div className="text-sm space-y-1">
@@ -1359,6 +1377,7 @@ function printThermalReceipt(receipt) {
     .item { display: flex; justify-content: space-between; font-size: 10px; margin: 1px 0; }
     .total { font-weight: bold; font-size: 12px; }
     .footer { text-align: center; font-size: 8px; margin-top: 6px; }
+    .contact { font-size: 9px; text-align: center; margin: 2px 0; }
   </style>
 </head>
 <body>
@@ -1366,7 +1385,9 @@ function printThermalReceipt(receipt) {
     <div class="title">AL MADINA SHOPPING CENTRE</div>
     <div class="subtitle">CHURI GALI</div>
     <div class="subtitle">Owner: Haji Murtaza</div>
-    <div class="subtitle">Phone: [Your Phone Number]</div>
+    <div class="contact">0332 7840742</div>
+    <div class="contact">Huzaifa: 0319 0189227</div>
+    <div class="contact">081 2827853</div>
     <div class="line"></div>
     <div class="center">SALES RECEIPT #${receipt.id}</div>
     <div class="center muted">${new Date(receipt.created_at).toLocaleString()}</div>

@@ -362,18 +362,28 @@ const DayManagement = () => {
               <h3 className="font-bold text-xl text-primary">Al Madina Shopping Centre</h3>
               <p className="text-gray-600">Churi Gali</p>
               <p className="text-sm font-semibold">Owner: Haji Murtaza</p>
-              <p className="text-sm">Phone: [Your Phone Number]</p>
+              <p className="text-sm">0332 7840742</p>
+              <p className="text-sm">Huzaifa: 0319 0189227</p>
+              <p className="text-sm">081 2827853</p>
             </div>
 
             {/* Summary Cards */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
               <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
                 <h4 className="text-sm font-medium text-blue-800 mb-1">Total Sales</h4>
                 <p className="text-2xl font-bold text-blue-600">{formatCurrency(selectedDay.day.total_sales)}</p>
               </div>
+              <div className="bg-red-50 p-4 rounded-lg border border-red-200">
+                <h4 className="text-sm font-medium text-red-800 mb-1">Total Returns</h4>
+                <p className="text-2xl font-bold text-red-600">{formatCurrency(selectedDay.day.total_returns || 0)}</p>
+              </div>
               <div className="bg-green-50 p-4 rounded-lg border border-green-200">
-                <h4 className="text-sm font-medium text-green-800 mb-1">Total Receipts</h4>
-                <p className="text-2xl font-bold text-green-600">{selectedDay.day.total_receipts}</p>
+                <h4 className="text-sm font-medium text-green-800 mb-1">Net Sales</h4>
+                <p className="text-2xl font-bold text-green-600">{formatCurrency((selectedDay.day.total_sales || 0) - (selectedDay.day.total_returns || 0))}</p>
+              </div>
+              <div className="bg-yellow-50 p-4 rounded-lg border border-yellow-200">
+                <h4 className="text-sm font-medium text-yellow-800 mb-1">Total Receipts</h4>
+                <p className="text-2xl font-bold text-yellow-600">{selectedDay.day.total_receipts}</p>
               </div>
               <div className="bg-purple-50 p-4 rounded-lg border border-purple-200">
                 <h4 className="text-sm font-medium text-purple-800 mb-1">Products Sold</h4>
